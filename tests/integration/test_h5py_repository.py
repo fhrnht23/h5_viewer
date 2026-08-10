@@ -6,8 +6,16 @@ import shutil
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from h5viewer.domain.models import DatasetSlice, LinkKind, ObjectKind, default_dataset_slice
+from h5viewer.domain.errors import UnsupportedEditError
+from h5viewer.domain.models import (
+    DatasetCreationOptions,
+    DatasetSlice,
+    LinkKind,
+    ObjectKind,
+    default_dataset_slice,
+)
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 from h5viewer.infrastructure.hdf5.validation import validate_hdf5_in_subprocess
 
@@ -74,6 +82,35 @@ def test_writes_supported_values_and_attributes(sample_hdf5: Path, tmp_path: Pat
 
     assert repository.read_dataset_value("/data/numeric", (1, 2, 3)) == 123.25
     assert repository.read_attribute_value("/data/numeric", "unit").value == "км/ч"
+
+
+def test_creates_and_safely_expands_dataset(sample_hdf5: Path, tmp_path: Path) -> None:
+    writable_path = tmp_path / "dataset-operations.h5"
+    shutil.copy2(sample_hdf5, writable_path)
+    repository = H5pyRepository(writable_path, writable=True)
+    options = DatasetCreationOptions(
+        shape=(2, 3),
+        dtype="float32",
+        maxshape=(None, 3),
+        chunked=True,
+        chunks=(2, 3),
+        compression="gzip",
+        compression_level=4,
+        fill_value_text="1.5",
+        shuffle=True,
+    )
+
+    repository.create_dataset("/data", "created", options)
+    extent = repository.dataset_extent("/data/created")
+    assert extent.shape == (2, 3)
+    assert extent.maxshape == (None, 3)
+    assert extent.chunks == (2, 3)
+    assert repository.read_dataset_value("/data/created", (1, 2)) == pytest.approx(1.5)
+
+    repository.resize_dataset("/data/created", (5, 3))
+    assert repository.dataset_extent("/data/created").shape == (5, 3)
+    with pytest.raises(UnsupportedEditError, match="Shrinking"):
+        repository.resize_dataset("/data/created", (1, 3))
 
 
 def test_validation_terminates_on_hard_link_cycle(sample_hdf5: Path) -> None:

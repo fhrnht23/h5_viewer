@@ -22,6 +22,8 @@ from h5viewer.domain.errors import (
 from h5viewer.domain.models import (
     AttributeInfo,
     AttributeSnapshot,
+    DatasetCreationOptions,
+    DatasetExtent,
     DatasetPage,
     DatasetSlice,
     LinkKind,
@@ -376,6 +378,80 @@ class H5pyRepository:
             h5_file.flush()
         return destination
 
+    def create_dataset(self, parent_path: str, name: str, options: DatasetCreationOptions) -> str:
+        parent_path = normalize_hdf5_path(parent_path)
+        _validate_link_name(name)
+        destination = join_hdf5_path(parent_path, name)
+        dtype = _creation_dtype(options.dtype)
+        keyword_arguments = _dataset_creation_arguments(options, dtype)
+        with self._open(write=True) as h5_file:
+            parent = _require_group(h5_file, parent_path)
+            if parent.get(name, getlink=True) is not None:
+                raise UnsupportedEditError(f"Link already exists: {destination}")
+            try:
+                parent.create_dataset(
+                    name,
+                    shape=options.shape,
+                    dtype=dtype,
+                    **keyword_arguments,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                raise UnsupportedEditError(f"Cannot create dataset: {exc}") from exc
+            h5_file.flush()
+        return destination
+
+    def dataset_extent(self, path: str) -> DatasetExtent:
+        normalized = normalize_hdf5_path(path)
+        with self._open() as h5_file:
+            dataset = _require_dataset(h5_file, normalized)
+            if dataset.shape is None or dataset.maxshape is None:
+                raise UnsupportedEditError("Null datasets cannot be resized")
+            return DatasetExtent(
+                shape=tuple(int(value) for value in dataset.shape),
+                maxshape=tuple(None if value is None else int(value) for value in dataset.maxshape),
+                chunks=(
+                    None
+                    if dataset.chunks is None
+                    else tuple(int(value) for value in dataset.chunks)
+                ),
+            )
+
+    def resize_dataset(
+        self,
+        path: str,
+        new_shape: tuple[int, ...],
+        *,
+        allow_shrink: bool = False,
+    ) -> None:
+        normalized = normalize_hdf5_path(path)
+        target = tuple(int(value) for value in new_shape)
+        if any(value < 0 for value in target):
+            raise UnsupportedEditError("Dataset dimensions cannot be negative")
+        with self._open(write=True) as h5_file:
+            dataset = _require_dataset(h5_file, normalized)
+            if dataset.shape is None or dataset.maxshape is None:
+                raise UnsupportedEditError("Null datasets cannot be resized")
+            current = tuple(int(value) for value in dataset.shape)
+            maximum = tuple(None if value is None else int(value) for value in dataset.maxshape)
+            if len(target) != len(current):
+                raise UnsupportedEditError("The new shape must have the same rank")
+            if dataset.chunks is None:
+                raise UnsupportedEditError("Only chunked datasets can be resized")
+            if not allow_shrink and any(
+                new < old for old, new in zip(current, target, strict=True)
+            ):
+                raise UnsupportedEditError(
+                    "Shrinking is disabled because it would irreversibly discard data"
+                )
+            for axis, (value, limit) in enumerate(zip(target, maximum, strict=True)):
+                if limit is not None and value > limit:
+                    raise UnsupportedEditError(f"Axis {axis} exceeds maxshape: {value} > {limit}")
+            try:
+                dataset.resize(target)
+            except (TypeError, ValueError) as exc:
+                raise UnsupportedEditError(f"Cannot resize dataset: {exc}") from exc
+            h5_file.flush()
+
     def delete_link(self, path: str) -> None:
         normalized = normalize_hdf5_path(path)
         parent_path, name = split_hdf5_path(normalized)
@@ -472,6 +548,81 @@ def _require_dataset(h5_file: h5py.File, path: str) -> h5py.Dataset:
     if not isinstance(obj, h5py.Dataset):
         raise ObjectNotFoundError(f"Object is not a dataset: {path}")
     return obj
+
+
+def _creation_dtype(specification: str) -> np.dtype[Any]:
+    """Преобразовать безопасную пользовательскую спецификацию в dtype."""
+    normalized = specification.strip().lower().replace("_", "-")
+    if normalized in {"utf-8", "utf8", "string", "str"}:
+        return cast(np.dtype[Any], np.dtype(h5py.string_dtype(encoding="utf-8")))
+    if normalized in {"ascii", "bytes"}:
+        return cast(np.dtype[Any], np.dtype(h5py.string_dtype(encoding="ascii")))
+    try:
+        dtype = np.dtype(specification.strip())
+    except TypeError as exc:
+        raise UnsupportedEditError(f"Invalid dtype: {specification}") from exc
+    if dtype.kind == "U":
+        raise UnsupportedEditError("Use 'utf-8' for variable-length Unicode strings")
+    if dtype.fields is not None or h5py.check_dtype(ref=dtype) is not None:
+        raise UnsupportedEditError("This dtype cannot be created by the basic dialog")
+    return dtype
+
+
+def _dataset_creation_arguments(
+    options: DatasetCreationOptions, dtype: np.dtype[Any]
+) -> dict[str, Any]:
+    """Проверить опции и собрать аргументы для h5py.create_dataset."""
+    shape = tuple(int(value) for value in options.shape)
+    if any(value < 0 for value in shape):
+        raise UnsupportedEditError("Dataset dimensions cannot be negative")
+    rank = len(shape)
+    if options.maxshape is not None:
+        if len(options.maxshape) != rank:
+            raise UnsupportedEditError("Shape and maxshape must have the same rank")
+        for axis, (size, maximum) in enumerate(zip(shape, options.maxshape, strict=True)):
+            if maximum is not None and maximum < size:
+                raise UnsupportedEditError(
+                    f"maxshape axis {axis} is smaller than the initial shape"
+                )
+    if options.chunks is not None and (
+        len(options.chunks) != rank or any(value <= 0 for value in options.chunks)
+    ):
+        raise UnsupportedEditError("Chunk shape must contain one positive value per axis")
+    compression = options.compression or None
+    if compression not in {None, "gzip", "lzf"}:
+        raise UnsupportedEditError(f"Unsupported compression filter: {compression}")
+    requires_chunks = bool(
+        options.maxshape is not None
+        or options.chunks is not None
+        or compression is not None
+        or options.shuffle
+        or options.fletcher32
+    )
+    if options.chunked is False and requires_chunks:
+        raise UnsupportedEditError(
+            "Contiguous layout cannot use maxshape, chunks, compression or filters"
+        )
+    if rank == 0 and (requires_chunks or options.chunked is True):
+        raise UnsupportedEditError("Scalar datasets cannot be chunked or compressed")
+
+    arguments: dict[str, Any] = {}
+    if options.maxshape is not None:
+        arguments["maxshape"] = options.maxshape
+    if options.chunked is True:
+        arguments["chunks"] = options.chunks or True
+    elif options.chunks is not None:
+        arguments["chunks"] = options.chunks
+    if compression is not None:
+        arguments["compression"] = compression
+        if compression == "gzip" and options.compression_level is not None:
+            if not 0 <= options.compression_level <= 9:
+                raise UnsupportedEditError("Gzip level must be between 0 and 9")
+            arguments["compression_opts"] = options.compression_level
+    arguments["shuffle"] = options.shuffle
+    arguments["fletcher32"] = options.fletcher32
+    if options.fill_value_text is not None:
+        arguments["fillvalue"] = _coerce_scalar(options.fill_value_text, dtype)
+    return arguments
 
 
 def _link_names_page(group: h5py.Group, offset: int, limit: int) -> list[str]:

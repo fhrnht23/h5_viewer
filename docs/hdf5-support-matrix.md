@@ -5,7 +5,7 @@
 | Возможность | Просмотр | Редактирование | Примечание |
 |---|---:|---:|---|
 | Groups и root group | ✅ | ◐ | Создание и rename; удаление группы пока отсутствует в UI |
-| Numeric datasets | ✅ | ✅ | Редактирование отдельных значений |
+| Numeric datasets | ✅ | ✅ | Создание, отдельные значения и безопасное расширение |
 | Scalar datasets | ✅ | ✅ | Для поддерживаемых dtype |
 | Null/empty datasets | ✅ | — | Корректно показываются без чтения payload |
 | N-D datasets | ✅ | ✅ | Двумерная проекция с фиксированными индексами |
@@ -19,11 +19,16 @@
 | Soft links | ✅ | — | Показывается target и broken state |
 | External links | ✅ | — | Показывается файл, target и broken state |
 | Committed datatype | ✅ | — | Metadata |
-| Chunking/layout/fill value | ✅ | — | Показ свойств хранения |
-| Filter pipeline | ✅ | — | Built-in и ID/name неизвестных filters |
+| Chunking/layout/fill value | ✅ | ✅ | Настройка при создании dataset |
+| Filter pipeline | ✅ | ◐ | Создание с gzip/lzf, shuffle и Fletcher32 |
 | VDS mappings | ✅ | — | Metadata mappings |
 | Dimension scales | ✅ | — | Флаги и labels |
 | External raw storage | ✅ | — | Metadata |
 | Copy между файлами | ✅ | ✅ | Без раскрытия soft/external/reference targets; undoable |
 | Move между файлами | — | — | Требует координации двух независимых commit |
 | Metadata search/compare | — | — | Следующий этап |
+
+Уменьшение dataset через UI намеренно отключено: HDF5 сразу удаляет отброшенную область, поэтому
+для корректного undo потребуется дисковый snapshot. Внутреннее уменьшение применяется только при
+undo ранее выполненного расширения, когда стек команд гарантирует отсутствие пользовательских
+изменений в удаляемой области.

@@ -149,6 +149,31 @@ class DatasetPage:
 
 
 @dataclass(frozen=True, slots=True)
+class DatasetCreationOptions:
+    """Параметры создаваемого набора данных без зависимости от h5py."""
+
+    shape: tuple[int, ...]
+    dtype: str
+    maxshape: tuple[int | None, ...] | None = None
+    chunked: bool | None = None
+    chunks: tuple[int, ...] | None = None
+    compression: str | None = None
+    compression_level: int | None = None
+    fill_value_text: str | None = None
+    shuffle: bool = False
+    fletcher32: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetExtent:
+    """Текущие и предельные размеры набора данных."""
+
+    shape: tuple[int, ...]
+    maxshape: tuple[int | None, ...]
+    chunks: tuple[int, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationReport:
     """Результат структурной проверки HDF5-файла."""
 

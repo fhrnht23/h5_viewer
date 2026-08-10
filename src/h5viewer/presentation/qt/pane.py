@@ -20,10 +20,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from h5viewer.application.commands import CreateGroupCommand, MoveLinkCommand
+from h5viewer.application.commands import (
+    CreateDatasetCommand,
+    CreateGroupCommand,
+    MoveLinkCommand,
+)
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import LinkRef, ObjectKind, split_hdf5_path
+from h5viewer.presentation.qt.dialogs import DatasetCreationDialog
 from h5viewer.presentation.qt.models import HdfTreeModel
 from h5viewer.presentation.qt.translations import tr
 
@@ -148,6 +153,17 @@ class BrowserPane(QWidget):
         value = self._model.data(source, HdfTreeModel.LinkRole)
         return value if isinstance(value, LinkRef) else None
 
+    def update_dataset_shape(
+        self,
+        session: DocumentSession,
+        path: str,
+        object_token: str | None,
+        shape: tuple[int, ...],
+    ) -> None:
+        """Обновить форму dataset без сброса раскрытия дерева и выбора."""
+        if self._session is session and self._model is not None:
+            self._model.update_dataset_shape(path, object_token, shape)
+
     def _select_document_index(self, index: int) -> None:
         if index < 0 or index >= len(self._documents):
             self._session = None
@@ -202,6 +218,10 @@ class BrowserPane(QWidget):
         create_group = QAction(tr("Pane", "Create group…"), menu)
         create_group.triggered.connect(lambda: self._create_group(link))
         menu.addAction(create_group)
+        create_dataset = QAction(tr("Pane", "Create dataset…"), menu)
+        create_dataset.triggered.connect(lambda: self._create_dataset(link))
+        menu.addAction(create_dataset)
+        menu.addSeparator()
         rename = QAction(tr("Pane", "Rename…"), menu)
         rename.setEnabled(link is not None and link.path != "/")
         rename.triggered.connect(lambda: self._rename_link(link))
@@ -211,11 +231,7 @@ class BrowserPane(QWidget):
     def _create_group(self, selected: LinkRef | None) -> None:
         if self._session is None or not self._ensure_editing(self._session):
             return
-        parent_path = "/"
-        if selected is not None:
-            parent_path = (
-                selected.path if selected.object_kind is ObjectKind.GROUP else selected.parent_path
-            )
+        parent_path = self._target_group(selected)
         name, accepted = QInputDialog.getText(
             self,
             tr("Pane", "Create group"),
@@ -230,6 +246,32 @@ class BrowserPane(QWidget):
             return
         self.refresh()
         self.content_changed.emit(self._session)
+
+    def _create_dataset(self, selected: LinkRef | None) -> None:
+        """Создать dataset в выбранной или родительской группе."""
+        if self._session is None:
+            return
+        parent_path = self._target_group(selected)
+        dialog = DatasetCreationDialog(parent_path, self)
+        if dialog.exec() != DatasetCreationDialog.DialogCode.Accepted:
+            return
+        if not self._ensure_editing(self._session):
+            return
+        request = dialog.request()
+        try:
+            self._session.execute(CreateDatasetCommand(parent_path, request.name, request.options))
+        except H5ViewerError as exc:
+            QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
+            return
+        self.refresh()
+        self.content_changed.emit(self._session)
+
+    @staticmethod
+    def _target_group(selected: LinkRef | None) -> str:
+        """Выбрать группу назначения по текущему объекту панели."""
+        if selected is None:
+            return "/"
+        return selected.path if selected.object_kind is ObjectKind.GROUP else selected.parent_path
 
     def _rename_link(self, selected: LinkRef | None) -> None:
         if (

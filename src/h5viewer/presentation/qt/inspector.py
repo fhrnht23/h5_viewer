@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
@@ -27,7 +28,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from h5viewer.application.commands import DeleteAttributeCommand, SetAttributeCommand
+from h5viewer.application.commands import (
+    DeleteAttributeCommand,
+    ResizeDatasetCommand,
+    SetAttributeCommand,
+)
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import (
@@ -38,6 +43,7 @@ from h5viewer.domain.models import (
     ObjectKind,
     default_dataset_slice,
 )
+from h5viewer.presentation.qt.dialogs import ResizeDatasetDialog
 from h5viewer.presentation.qt.models import DatasetTableModel
 from h5viewer.presentation.qt.translations import tr
 
@@ -48,6 +54,7 @@ class ObjectInspector(QTabWidget):
     """Показывает свойства, атрибуты и ограниченный срез dataset."""
 
     content_changed = Signal(object)
+    dataset_resized = Signal(object, str, object, object)
     status_message = Signal(str)
 
     def __init__(
@@ -81,6 +88,8 @@ class ObjectInspector(QTabWidget):
             spinbox.setGroupSeparatorShown(True)
         self.load_page_button = QPushButton(self.data_page)
         self.load_page_button.clicked.connect(self._load_dataset_page)
+        self.resize_dataset_button = QPushButton(self.data_page)
+        self.resize_dataset_button.clicked.connect(self._resize_dataset)
         projection.addRow(self.row_axis_label, self.row_axis)
         projection.addRow(self.column_axis_label, self.column_axis)
         projection.addRow(self.fixed_indices_label, self.fixed_indices)
@@ -92,6 +101,7 @@ class ObjectInspector(QTabWidget):
         offsets.addWidget(self.column_offset_label)
         offsets.addWidget(self.column_offset)
         offsets.addWidget(self.load_page_button)
+        offsets.addWidget(self.resize_dataset_button)
         projection.addRow(offsets)
         data_layout.addLayout(projection)
         self.data_message = QLabel(self.data_page)
@@ -177,6 +187,7 @@ class ObjectInspector(QTabWidget):
         self.row_offset_label.setText(tr("Inspector", "Row offset"))
         self.column_offset_label.setText(tr("Inspector", "Column offset"))
         self.load_page_button.setText(tr("Inspector", "Load page"))
+        self.resize_dataset_button.setText(tr("Inspector", "Resize…"))
         self.add_attribute_button.setText(tr("Inspector", "Add"))
         self.edit_attribute_button.setText(tr("Inspector", "Change"))
         self.delete_attribute_button.setText(tr("Inspector", "Delete"))
@@ -205,6 +216,7 @@ class ObjectInspector(QTabWidget):
         self.preview_text.setPlainText(tr("Inspector", "Select an object to inspect it"))
         self.raw_text.clear()
         self.data_message.setText(tr("Inspector", "Select a dataset"))
+        self.resize_dataset_button.setEnabled(False)
 
     def show_object(self, session: DocumentSession, link: LinkRef) -> None:
         """Показать выбранную ссылку и, если возможно, её целевой объект."""
@@ -226,13 +238,16 @@ class ObjectInspector(QTabWidget):
         self._populate_link_info(link, self._details)
         self._populate_raw(self._details)
         if link.object_kind is ObjectKind.DATASET and link.shape is not None:
+            self.resize_dataset_button.setEnabled(True)
             self._configure_dataset(link.shape)
             self._load_dataset_page()
             self.setCurrentWidget(self.data_page)
         elif link.object_kind is ObjectKind.DATASET:
+            self.resize_dataset_button.setEnabled(False)
             self.dataset_model.clear()
             self.data_message.setText(tr("Inspector", "No data"))
         else:
+            self.resize_dataset_button.setEnabled(False)
             self.dataset_model.clear()
             self.data_message.setText(tr("Inspector", "Select a dataset"))
             self.preview_text.setPlainText(
@@ -466,6 +481,53 @@ class ObjectInspector(QTabWidget):
     def _data_changed(self) -> None:
         if self._session is not None:
             self.content_changed.emit(self._session)
+
+    def _resize_dataset(self) -> None:
+        """Расширить выбранный dataset обратимой командой."""
+        if self._session is None or self._link is None:
+            return
+        try:
+            extent = self._session.repository().dataset_extent(self._link.path)
+        except H5ViewerError as exc:
+            self._show_error(str(exc))
+            return
+        if extent.chunks is None:
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Unsupported edit"),
+                tr("DatasetDialog", "Only chunked datasets can be resized"),
+            )
+            return
+        if all(
+            maximum is not None and maximum <= current
+            for current, maximum in zip(extent.shape, extent.maxshape, strict=True)
+        ):
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Unsupported edit"),
+                tr("DatasetDialog", "Dataset has no expandable axes"),
+            )
+            return
+        dialog = ResizeDatasetDialog(extent, self)
+        if dialog.exec() != ResizeDatasetDialog.DialogCode.Accepted:
+            return
+        new_shape = dialog.new_shape()
+        if not self._ensure_editing(self._session):
+            return
+        try:
+            self._session.execute(ResizeDatasetCommand(self._link.path, new_shape))
+        except H5ViewerError as exc:
+            self._show_error(str(exc))
+            return
+        self._link = replace(self._link, shape=new_shape)
+        self.show_object(self._session, self._link)
+        self.dataset_resized.emit(
+            self._session,
+            self._link.path,
+            self._link.object_token,
+            new_shape,
+        )
+        self.content_changed.emit(self._session)
 
     def _show_error(self, message: str) -> None:
         QMessageBox.critical(self, tr("Dialog", "Error"), message)

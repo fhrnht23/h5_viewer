@@ -35,7 +35,8 @@ Updated: 2026-08-10
 
 ### M3 — richer HDF5 operations
 
-- [ ] Dataset creation dialog and resize.
+- [x] Dataset creation dialog and safe expansion within maxshape.
+- [ ] Destructive dataset shrinking with disk-backed undo snapshots.
 - [x] Undoable object/link copying inside and across documents.
 - [ ] Link creation and coordinated move inside and across documents.
 - [ ] Object/reference inspectors and VDS/dimension-scale details.

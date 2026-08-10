@@ -7,6 +7,14 @@ from PySide6.QtWidgets import QApplication
 
 _RU: dict[str, str] = {
     "H5 Viewer": "H5 Viewer",
+    "OK": "ОК",
+    "&OK": "ОК",
+    "Cancel": "Отмена",
+    "&Cancel": "Отмена",
+    "Yes": "Да",
+    "&Yes": "Да",
+    "No": "Нет",
+    "&No": "Нет",
     "File": "Файл",
     "Edit": "Правка",
     "View": "Вид",
@@ -81,10 +89,12 @@ _RU: dict[str, str] = {
     "The file has unsaved changes.": "В файле есть несохранённые изменения.",
     "Save changes before closing?": "Сохранить изменения перед закрытием?",
     "Create group…": "Создать группу…",
+    "Create dataset…": "Создать набор данных…",
     "Rename…": "Переименовать…",
     "Group name": "Имя группы",
     "New name": "Новое имя",
     "Create group": "Создание группы",
+    "Create dataset": "Создание набора данных",
     "Rename object": "Переименование объекта",
     "Copy object": "Копирование объекта",
     "Destination name": "Имя в назначении",
@@ -99,6 +109,61 @@ _RU: dict[str, str] = {
         "Объект будет скопирован без раскрытия soft/external links и references. Продолжить?"
     ),
     "Object copied": "Объект скопирован",
+    "Resize…": "Изменить размер…",
+    "Resize dataset": "Изменение размера набора данных",
+    "Parent group": "Родительская группа",
+    "Empty means scalar": "Пустое поле означает скаляр",
+    "For example: *, 10; empty means fixed size": (
+        "Например: *, 10; пустое поле означает фиксированный размер"
+    ),
+    "Automatic": "Автоматически",
+    "Chunked": "Блочное",
+    "Contiguous": "Непрерывное",
+    "None": "Нет",
+    "Empty means automatic": "Пустое поле означает автоматический выбор",
+    "Empty means dtype default": "Пустое поле означает значение по умолчанию для dtype",
+    "Shuffle filter": "Фильтр shuffle",
+    "Fletcher32 checksum": "Контрольная сумма Fletcher32",
+    "Maximum shape": "Максимальная форма",
+    "Layout": "Размещение",
+    "Chunk shape": "Форма блока",
+    "Compression": "Сжатие",
+    "Gzip level": "Уровень gzip",
+    "Fill value": "Значение заполнения",
+    "Current shape": "Текущая форма",
+    "New shape": "Новая форма",
+    "Only expansion is allowed; shrinking could irreversibly discard data.": (
+        "Разрешено только расширение: уменьшение может необратимо удалить данные."
+    ),
+    "Enter a valid dataset name": "Введите корректное имя набора данных",
+    "Shape and maximum shape must have the same rank": (
+        "Форма и максимальная форма должны иметь одинаковый ранг"
+    ),
+    "Maximum shape cannot be smaller than shape": (
+        "Максимальная форма не может быть меньше начальной"
+    ),
+    "Chunk shape must contain one positive value per axis": (
+        "Форма блока должна содержать по одному положительному значению на ось"
+    ),
+    "Contiguous layout cannot use chunks, compression or maximum shape": (
+        "Непрерывное размещение несовместимо с блоками, сжатием и максимальной формой"
+    ),
+    "Scalar datasets cannot be chunked or compressed": (
+        "Скалярные наборы данных нельзя разбивать на блоки или сжимать"
+    ),
+    "Enter a dtype": "Укажите dtype",
+    "Only chunked datasets can be resized": (
+        "Изменять размер можно только у блочных наборов данных"
+    ),
+    "Dataset has no expandable axes": "У набора данных нет расширяемых осей",
+    "The new shape must have the same rank": "Новая форма должна иметь тот же ранг",
+    "Enter a shape different from the current shape": ("Введите форму, отличающуюся от текущей"),
+    "Shrinking datasets is not supported": "Уменьшение наборов данных не поддерживается",
+    "The new shape exceeds maximum shape": "Новая форма превышает максимальную",
+    "Dimensions must be non-negative integers separated by commas": (
+        "Размеры должны быть неотрицательными целыми числами через запятую"
+    ),
+    "scalar": "скаляр",
     "Attribute name": "Имя атрибута",
     "Attribute value (text or JSON)": "Значение атрибута (текст или JSON)",
     "Add attribute": "Добавление атрибута",

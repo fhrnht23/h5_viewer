@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import numpy as np
@@ -71,6 +71,30 @@ class HdfTreeModel(QAbstractItemModel):
         self.beginResetModel()
         self._root = self._make_root()
         self.endResetModel()
+
+    def update_dataset_shape(
+        self,
+        path: str,
+        object_token: str | None,
+        shape: tuple[int, ...],
+    ) -> None:
+        """Обновить форму dataset во всех уже загруженных ссылках на объект."""
+        root_index = self.index(0, 0)
+        pending: list[tuple[TreeNode, QModelIndex]] = [(self._root, root_index)]
+        while pending:
+            node, index = pending.pop()
+            same_object = bool(object_token and node.link.object_token == object_token)
+            if node.link.path == path or same_object:
+                node.link = replace(node.link, shape=shape)
+                shape_index = index.siblingAtColumn(2)
+                self.dataChanged.emit(
+                    shape_index,
+                    shape_index,
+                    [int(Qt.ItemDataRole.DisplayRole)],
+                )
+            for row, child in enumerate(node.children):
+                child_index = self.index(row, 0, index)
+                pending.append((child, child_index))
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
         del parent

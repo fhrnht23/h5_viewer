@@ -10,12 +10,15 @@ import pytest
 
 from h5viewer.application.commands import (
     CopyObjectCommand,
+    CreateDatasetCommand,
     DeleteAttributeCommand,
+    ResizeDatasetCommand,
     SetAttributeCommand,
     WriteDatasetValueCommand,
 )
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import SaveConflictError
+from h5viewer.domain.models import DatasetCreationOptions
 from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 
@@ -143,3 +146,39 @@ def test_copy_preserves_indirect_links(sample_hdf5: Path, tmp_path: Path) -> Non
         assert broken_link.path == "/missing/object"
         assert isinstance(external_link, h5py.ExternalLink)
         assert external_link.path == "/external_data"
+
+
+def test_dataset_creation_and_resize_are_undoable(sample_hdf5: Path, tmp_path: Path) -> None:
+    path = tmp_path / "dataset-commands.h5"
+    shutil.copy2(sample_hdf5, path)
+    session = _session(path)
+    session.begin_edit()
+    options = DatasetCreationOptions(
+        shape=(2, 2),
+        dtype="int32",
+        maxshape=(None, 2),
+        chunked=True,
+        fill_value_text="7",
+    )
+
+    session.execute(CreateDatasetCommand("/data", "command_created", options))
+    assert session.repository().dataset_extent("/data/command_created").shape == (2, 2)
+    session.undo()
+    assert "command_created" not in {
+        link.name for link in session.repository().list_children("/data", 0, 100)
+    }
+    session.redo()
+
+    session.execute(ResizeDatasetCommand("/data/command_created", (4, 2)))
+    assert session.repository().dataset_extent("/data/command_created").shape == (4, 2)
+    session.undo()
+    assert session.repository().dataset_extent("/data/command_created").shape == (2, 2)
+    session.redo()
+    assert session.repository().read_dataset_value("/data/command_created", (3, 1)) == 7
+    result = session.save(create_backup=False)
+    assert result is not None
+    with h5py.File(path, "r") as saved:
+        dataset = saved["/data/command_created"]
+        assert dataset.shape == (4, 2)
+        assert dataset.maxshape == (None, 2)
+        assert dataset[3, 1] == 7

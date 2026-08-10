@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
@@ -187,6 +188,7 @@ class MainWindow(QMainWindow):
             pane.content_changed.connect(self._content_changed)
             pane.status_message.connect(self.statusBar().showMessage)
         self.inspector.content_changed.connect(self._content_changed)
+        self.inspector.dataset_resized.connect(self._dataset_resized)
         self.inspector.status_message.connect(self.statusBar().showMessage)
         self._language_manager.language_changed.connect(self._language_changed)
 
@@ -534,6 +536,26 @@ class MainWindow(QMainWindow):
             self._update_title()
             return
         self._refresh_session(session)
+
+    def _dataset_resized(
+        self,
+        session: DocumentSession,
+        path: str,
+        object_token: str | None,
+        shape: tuple[int, ...],
+    ) -> None:
+        """Синхронизировать форму dataset в обеих панелях без сброса выбора."""
+        for pane in (self.left_pane, self.right_pane):
+            pane.update_dataset_shape(session, path, object_token, shape)
+        if (
+            self._active_session is session
+            and self._active_link is not None
+            and (
+                self._active_link.path == path
+                or bool(object_token and self._active_link.object_token == object_token)
+            )
+        ):
+            self._active_link = replace(self._active_link, shape=shape)
 
     def _refresh_session(self, session: DocumentSession) -> None:
         for pane in (self.left_pane, self.right_pane):

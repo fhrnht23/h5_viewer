@@ -12,7 +12,7 @@ dist/
 coverage.xml
 .coverage
 htmlcov/
+artifacts/
 *.h5viewer-*.tmp
 *.h5viewer-recovery.json
 *.h5viewer-undo
-

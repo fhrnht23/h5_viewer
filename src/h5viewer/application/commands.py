@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from h5viewer.domain.errors import ObjectNotFoundError
-from h5viewer.domain.models import join_hdf5_path
+from h5viewer.domain.models import DatasetCreationOptions, join_hdf5_path
 from h5viewer.domain.repository import HdfRepository
 
 CopyOperation = Callable[[Path, str, Path, str, str], None]
@@ -117,6 +117,47 @@ class CreateGroupCommand(EditCommand):
 
     def revert(self, repository: HdfRepository) -> None:
         repository.delete_link(self.created_path)
+
+
+@dataclass(slots=True)
+class CreateDatasetCommand(EditCommand):
+    """Создать пустой набор данных с заданными свойствами хранения."""
+
+    parent_path: str
+    name: str
+    options: DatasetCreationOptions
+    label: str = "Create dataset"
+
+    @property
+    def created_path(self) -> str:
+        return join_hdf5_path(self.parent_path, self.name)
+
+    def apply(self, repository: HdfRepository) -> None:
+        repository.create_dataset(self.parent_path, self.name, self.options)
+
+    def revert(self, repository: HdfRepository) -> None:
+        repository.delete_link(self.created_path)
+
+
+@dataclass(slots=True)
+class ResizeDatasetCommand(EditCommand):
+    """Безопасно расширить набор данных с возможностью точного undo."""
+
+    path: str
+    new_shape: tuple[int, ...]
+    label: str = "Resize dataset"
+    _old_shape: tuple[int, ...] | None = field(default=None, init=False, repr=False)
+
+    def apply(self, repository: HdfRepository) -> None:
+        if self._old_shape is None:
+            self._old_shape = repository.dataset_extent(self.path).shape
+        repository.resize_dataset(self.path, self.new_shape)
+
+    def revert(self, repository: HdfRepository) -> None:
+        if self._old_shape is None:
+            raise RuntimeError("Исходный размер dataset не был сохранён")
+        # Стек команд гарантирует, что изменения в добавленной области уже отменены.
+        repository.resize_dataset(self.path, self._old_shape, allow_shrink=True)
 
 
 @dataclass(slots=True)

@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 from h5viewer.domain.models import (
     AttributeSnapshot,
+    DatasetCreationOptions,
+    DatasetExtent,
     DatasetPage,
     DatasetSlice,
     LinkRef,
@@ -60,6 +62,21 @@ class HdfRepository(Protocol):
 
     def create_group(self, parent_path: str, name: str) -> str:
         """Создать группу и вернуть её абсолютный путь."""
+
+    def create_dataset(self, parent_path: str, name: str, options: DatasetCreationOptions) -> str:
+        """Создать набор данных и вернуть его абсолютный путь."""
+
+    def dataset_extent(self, path: str) -> DatasetExtent:
+        """Вернуть размеры, maxshape и chunks набора данных."""
+
+    def resize_dataset(
+        self,
+        path: str,
+        new_shape: tuple[int, ...],
+        *,
+        allow_shrink: bool = False,
+    ) -> None:
+        """Изменить размеры chunked dataset с явным контролем уменьшения."""
 
     def delete_link(self, path: str) -> None:
         """Удалить одну ссылку из родительской группы."""
