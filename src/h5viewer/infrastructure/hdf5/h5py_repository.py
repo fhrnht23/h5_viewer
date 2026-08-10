@@ -1,0 +1,798 @@
+"""Реализация порта HDF5-репозитория с помощью h5py."""
+
+from __future__ import annotations
+
+import json
+import math
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, cast
+
+import h5py
+import numpy as np
+
+from h5viewer.domain.errors import (
+    FileOpenError,
+    H5ViewerError,
+    ObjectNotFoundError,
+    UnsupportedEditError,
+    ValidationError,
+)
+from h5viewer.domain.models import (
+    AttributeInfo,
+    AttributeSnapshot,
+    DatasetPage,
+    DatasetSlice,
+    LinkKind,
+    LinkRef,
+    ObjectDetails,
+    ObjectKind,
+    ValidationReport,
+    join_hdf5_path,
+    normalize_hdf5_path,
+    split_hdf5_path,
+)
+
+_VALUE_PREVIEW_ITEMS = 24
+
+
+class H5pyRepository:
+    """Доступ к одному физическому HDF5-файлу через короткоживущие handles.
+
+    Объекты h5py не покидают этот класс. Каждый публичный вызов открывает и закрывает
+    файл, что явно задаёт владение и исключает устаревшие handles в GUI-моделях.
+    """
+
+    def __init__(self, path: Path | str, *, writable: bool = False) -> None:
+        self._path = Path(path).expanduser().resolve()
+        self._writable = writable
+        if not self._path.is_file():
+            raise FileOpenError(f"File does not exist: {self._path}")
+        try:
+            if not h5py.is_hdf5(self._path):
+                raise FileOpenError(f"Not an HDF5 file: {self._path}")
+        except OSError as exc:
+            raise FileOpenError(f"Cannot inspect file: {self._path}") from exc
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    @property
+    def writable(self) -> bool:
+        return self._writable
+
+    @contextmanager
+    def _open(self, *, write: bool = False) -> Iterator[h5py.File]:
+        if write and not self._writable:
+            raise UnsupportedEditError("Repository is read-only")
+        mode = "r+" if write else "r"
+        try:
+            with h5py.File(self._path, mode) as h5_file:
+                yield h5_file
+        except H5ViewerError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            operation = "write" if write else "read"
+            raise FileOpenError(f"HDF5 {operation} failed for {self._path}: {exc}") from exc
+
+    def root(self) -> LinkRef:
+        with self._open() as h5_file:
+            root = h5_file["/"]
+            return LinkRef(
+                name="/",
+                path="/",
+                parent_path="/",
+                link_kind=LinkKind.ROOT,
+                object_kind=ObjectKind.GROUP,
+                object_token=_object_token(root),
+                child_count=len(root),
+            )
+
+    def child_count(self, group_path: str) -> int:
+        normalized = normalize_hdf5_path(group_path)
+        with self._open() as h5_file:
+            group = _require_group(h5_file, normalized)
+            return len(group)
+
+    def list_children(self, group_path: str, offset: int, limit: int) -> list[LinkRef]:
+        if offset < 0 or limit < 0:
+            raise ValueError("offset and limit must be non-negative")
+        normalized = normalize_hdf5_path(group_path)
+        with self._open() as h5_file:
+            group = _require_group(h5_file, normalized)
+            names = _link_names_page(group, offset, limit)
+            return [self._describe_link(group, name, normalized) for name in names]
+
+    def _describe_link(self, group: h5py.Group, name: str, parent_path: str) -> LinkRef:
+        path = join_hdf5_path(parent_path, name)
+        try:
+            link = group.get(name, getlink=True)
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            return LinkRef(
+                name=name,
+                path=path,
+                parent_path=parent_path,
+                link_kind=LinkKind.UNKNOWN,
+                object_kind=ObjectKind.BROKEN_LINK,
+                error=str(exc),
+            )
+
+        link_kind, target_path, external_file = _classify_link(link)
+        error: str | None
+        try:
+            obj = group.get(name)
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            obj = None
+            error = str(exc)
+        else:
+            error = None
+
+        if obj is None:
+            return LinkRef(
+                name=name,
+                path=path,
+                parent_path=parent_path,
+                link_kind=link_kind,
+                object_kind=ObjectKind.BROKEN_LINK,
+                target_path=target_path,
+                external_file=external_file,
+                error=error or "Link target is unavailable",
+            )
+
+        kind = _object_kind(obj)
+        shape: tuple[int, ...] | None = None
+        dtype: str | None = None
+        storage: str | None = None
+        child_count: int | None = None
+        if isinstance(obj, h5py.Group):
+            child_count = len(obj)
+        elif isinstance(obj, h5py.Dataset):
+            shape = None if obj.shape is None else tuple(int(size) for size in obj.shape)
+            dtype = str(obj.dtype)
+            storage = _dataset_layout(obj)
+        elif isinstance(obj, h5py.Datatype):
+            dtype = str(obj.dtype)
+
+        return LinkRef(
+            name=name,
+            path=path,
+            parent_path=parent_path,
+            link_kind=link_kind,
+            object_kind=kind,
+            object_token=_object_token(obj),
+            target_path=target_path,
+            external_file=external_file,
+            shape=shape,
+            dtype=dtype,
+            storage=storage,
+            child_count=child_count,
+        )
+
+    def details(self, path: str) -> ObjectDetails:
+        normalized = normalize_hdf5_path(path)
+        with self._open() as h5_file:
+            try:
+                obj = h5_file[normalized]
+            except KeyError as exc:
+                raise ObjectNotFoundError(f"HDF5 object does not exist: {normalized}") from exc
+
+            kind = _object_kind(obj)
+            properties: list[tuple[str, str]] = [
+                ("path", normalized),
+                ("object_kind", kind.value),
+                ("object_token", _object_token(obj)),
+                ("attribute_count", str(len(obj.attrs))),
+            ]
+            warnings: list[str] = []
+
+            if normalized == "/":
+                properties.extend(
+                    [
+                        ("file", str(self._path)),
+                        ("file_size", str(self._path.stat().st_size)),
+                        ("driver", str(h5_file.driver)),
+                        ("libver", " → ".join(str(value) for value in h5_file.libver)),
+                        ("userblock_size", str(h5_file.userblock_size)),
+                        ("hdf5_version", h5py.version.hdf5_version),
+                        ("h5py_version", h5py.version.version),
+                    ]
+                )
+
+            if isinstance(obj, h5py.Group):
+                properties.append(("member_count", str(len(obj))))
+            elif isinstance(obj, h5py.Dataset):
+                properties.extend(_dataset_properties(obj, warnings))
+            elif isinstance(obj, h5py.Datatype):
+                properties.append(("dtype", str(obj.dtype)))
+
+            attributes = tuple(_attribute_info(obj.attrs, name) for name in obj.attrs)
+            return ObjectDetails(
+                path=normalized,
+                kind=kind,
+                object_token=_object_token(obj),
+                properties=tuple(properties),
+                attributes=attributes,
+                warnings=tuple(warnings),
+            )
+
+    def read_dataset_page(self, path: str, selection: DatasetSlice) -> DatasetPage:
+        normalized = normalize_hdf5_path(path)
+        with self._open() as h5_file:
+            dataset = _require_dataset(h5_file, normalized)
+            if dataset.shape is None:
+                return DatasetPage(
+                    values=np.empty((0, 0), dtype=object),
+                    row_offset=0,
+                    column_offset=0,
+                    row_axis_size=0,
+                    column_axis_size=0,
+                    dtype=str(dataset.dtype),
+                    editable=False,
+                    warnings=("Null dataspace has no values",),
+                )
+            shape = tuple(int(size) for size in dataset.shape)
+            normalized_selection = _validate_selection(shape, selection)
+            editable = _dtype_is_editable(dataset.dtype)
+            warnings: list[str] = []
+            if not editable:
+                warnings.append("This datatype is displayed read-only")
+
+            try:
+                values = _read_projection(dataset, normalized_selection)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                raise H5ViewerError(f"Cannot read dataset slice {normalized}: {exc}") from exc
+
+            row_size = (
+                shape[normalized_selection.row_axis]
+                if normalized_selection.row_axis is not None
+                else 1
+            )
+            column_size = (
+                shape[normalized_selection.column_axis]
+                if normalized_selection.column_axis is not None
+                else 1
+            )
+            return DatasetPage(
+                values=values,
+                row_offset=normalized_selection.row_offset,
+                column_offset=normalized_selection.column_offset,
+                row_axis_size=row_size,
+                column_axis_size=column_size,
+                dtype=str(dataset.dtype),
+                editable=editable,
+                warnings=tuple(warnings),
+            )
+
+    def read_dataset_value(self, path: str, index: tuple[int, ...]) -> Any:
+        normalized = normalize_hdf5_path(path)
+        with self._open() as h5_file:
+            dataset = _require_dataset(h5_file, normalized)
+            if dataset.shape is None:
+                raise UnsupportedEditError("Null datasets do not contain values")
+            checked = _validate_element_index(tuple(int(size) for size in dataset.shape), index)
+            if not checked:
+                return dataset[()]
+            return dataset[checked]
+
+    def write_dataset_value(self, path: str, index: tuple[int, ...], text: str) -> None:
+        normalized = normalize_hdf5_path(path)
+        with self._open(write=True) as h5_file:
+            dataset = _require_dataset(h5_file, normalized)
+            if dataset.shape is None:
+                raise UnsupportedEditError("Null datasets do not contain values")
+            checked = _validate_element_index(tuple(int(size) for size in dataset.shape), index)
+            value = _coerce_scalar(text, dataset.dtype)
+            if not checked:
+                dataset[()] = value
+            else:
+                dataset[checked] = value
+            h5_file.flush()
+
+    def write_dataset_value_raw(self, path: str, index: tuple[int, ...], value: Any) -> None:
+        normalized = normalize_hdf5_path(path)
+        with self._open(write=True) as h5_file:
+            dataset = _require_dataset(h5_file, normalized)
+            if dataset.shape is None:
+                raise UnsupportedEditError("Null datasets do not contain values")
+            checked = _validate_element_index(tuple(int(size) for size in dataset.shape), index)
+            if not checked:
+                dataset[()] = value
+            else:
+                dataset[checked] = value
+            h5_file.flush()
+
+    def set_attribute(self, path: str, name: str, text: str) -> None:
+        normalized = normalize_hdf5_path(path)
+        if not name or "/" in name:
+            raise UnsupportedEditError("Attribute name must be non-empty and cannot contain '/'")
+        with self._open(write=True) as h5_file:
+            try:
+                obj = h5_file[normalized]
+            except KeyError as exc:
+                raise ObjectNotFoundError(normalized) from exc
+            if name in obj.attrs:
+                attribute_id = obj.attrs.get_id(name)
+                dtype = attribute_id.dtype
+                shape = tuple(int(size) for size in attribute_id.shape)
+                value = _coerce_attribute(text, dtype, shape)
+                obj.attrs.modify(name, value)
+            else:
+                obj.attrs.create(name, _parse_json_or_text(text))
+            h5_file.flush()
+
+    def read_attribute_value(self, path: str, name: str) -> AttributeSnapshot:
+        normalized = normalize_hdf5_path(path)
+        with self._open() as h5_file:
+            try:
+                attributes = h5_file[normalized].attrs
+                attribute_id = attributes.get_id(name)
+                return AttributeSnapshot(
+                    value=attributes[name],
+                    dtype=attribute_id.dtype,
+                    shape=tuple(int(size) for size in attribute_id.shape),
+                )
+            except KeyError as exc:
+                raise ObjectNotFoundError(f"Attribute does not exist: {normalized}@{name}") from exc
+
+    def write_attribute_value_raw(self, path: str, name: str, snapshot: AttributeSnapshot) -> None:
+        normalized = normalize_hdf5_path(path)
+        with self._open(write=True) as h5_file:
+            try:
+                obj = h5_file[normalized]
+            except KeyError as exc:
+                raise ObjectNotFoundError(normalized) from exc
+            if name in obj.attrs:
+                obj.attrs.modify(name, snapshot.value)
+            else:
+                obj.attrs.create(
+                    name,
+                    snapshot.value,
+                    shape=snapshot.shape,
+                    dtype=snapshot.dtype,
+                )
+            h5_file.flush()
+
+    def delete_attribute(self, path: str, name: str) -> None:
+        normalized = normalize_hdf5_path(path)
+        with self._open(write=True) as h5_file:
+            try:
+                obj = h5_file[normalized]
+                del obj.attrs[name]
+            except KeyError as exc:
+                raise ObjectNotFoundError(f"Attribute does not exist: {normalized}@{name}") from exc
+            h5_file.flush()
+
+    def create_group(self, parent_path: str, name: str) -> str:
+        parent_path = normalize_hdf5_path(parent_path)
+        _validate_link_name(name)
+        destination = join_hdf5_path(parent_path, name)
+        with self._open(write=True) as h5_file:
+            parent = _require_group(h5_file, parent_path)
+            if name in parent:
+                raise UnsupportedEditError(f"Link already exists: {destination}")
+            parent.create_group(name)
+            h5_file.flush()
+        return destination
+
+    def delete_link(self, path: str) -> None:
+        normalized = normalize_hdf5_path(path)
+        parent_path, name = split_hdf5_path(normalized)
+        with self._open(write=True) as h5_file:
+            parent = _require_group(h5_file, parent_path)
+            if parent.get(name, getlink=True) is None:
+                raise ObjectNotFoundError(normalized)
+            del parent[name]
+            h5_file.flush()
+
+    def move_link(self, source_path: str, destination_path: str) -> None:
+        source = normalize_hdf5_path(source_path)
+        destination = normalize_hdf5_path(destination_path)
+        if source == "/" or destination == "/":
+            raise UnsupportedEditError("The root group cannot be moved or replaced")
+        destination_parent, destination_name = split_hdf5_path(destination)
+        _validate_link_name(destination_name)
+        with self._open(write=True) as h5_file:
+            _require_group(h5_file, destination_parent)
+            if destination in h5_file:
+                raise UnsupportedEditError(f"Destination already exists: {destination}")
+            try:
+                h5_file.move(source, destination)
+            except (KeyError, ValueError) as exc:
+                raise ObjectNotFoundError(source) from exc
+            h5_file.flush()
+
+    def flush(self) -> None:
+        if not self._writable:
+            return
+        with self._open(write=True) as h5_file:
+            h5_file.flush()
+
+    def validate(self) -> ValidationReport:
+        object_count = 0
+        link_count = 0
+        warnings: list[str] = []
+        try:
+            with self._open() as h5_file:
+                root = h5_file["/"]
+                pending: list[h5py.Group] = [root]
+                visited_groups: set[str] = set()
+                visited_objects: set[str] = set()
+                while pending:
+                    group = pending.pop()
+                    group_token = _object_token(group)
+                    if group_token in visited_groups:
+                        continue
+                    visited_groups.add(group_token)
+                    if group_token not in visited_objects:
+                        visited_objects.add(group_token)
+                        object_count += 1
+                    for name in group:
+                        link_count += 1
+                        link = group.get(name, getlink=True)
+                        if not isinstance(link, h5py.HardLink):
+                            try:
+                                if group.get(name) is None:
+                                    warnings.append(f"Unresolved link: {group.name}/{name}")
+                            except (KeyError, OSError, RuntimeError, ValueError):
+                                warnings.append(f"Unresolved link: {group.name}/{name}")
+                            continue
+                        obj = group.get(name)
+                        if obj is None:
+                            raise ValidationError(f"Hard link has no target: {group.name}/{name}")
+                        token = _object_token(obj)
+                        if token not in visited_objects:
+                            visited_objects.add(token)
+                            object_count += 1
+                        if isinstance(obj, h5py.Group) and token not in visited_groups:
+                            pending.append(obj)
+                        elif isinstance(obj, h5py.Dataset):
+                            _ = obj.shape, obj.dtype, obj.id.get_storage_size()
+        except FileOpenError as exc:
+            raise ValidationError(str(exc)) from exc
+        return ValidationReport(object_count, link_count, tuple(warnings))
+
+
+def _require_group(h5_file: h5py.File, path: str) -> h5py.Group:
+    try:
+        obj = h5_file[path]
+    except KeyError as exc:
+        raise ObjectNotFoundError(f"Group does not exist: {path}") from exc
+    if not isinstance(obj, h5py.Group):
+        raise ObjectNotFoundError(f"Object is not a group: {path}")
+    return obj
+
+
+def _require_dataset(h5_file: h5py.File, path: str) -> h5py.Dataset:
+    try:
+        obj = h5_file[path]
+    except KeyError as exc:
+        raise ObjectNotFoundError(f"Dataset does not exist: {path}") from exc
+    if not isinstance(obj, h5py.Dataset):
+        raise ObjectNotFoundError(f"Object is not a dataset: {path}")
+    return obj
+
+
+def _link_names_page(group: h5py.Group, offset: int, limit: int) -> list[str]:
+    """Получить страницу имён через HDF5 index без пропуска с начала группы."""
+    if limit == 0:
+        return []
+    names: list[str] = []
+
+    def collect(raw_name: bytes) -> bool:
+        names.append(raw_name.decode("utf-8", errors="surrogateescape"))
+        return len(names) >= limit
+
+    creation_order = group.id.get_create_plist().get_link_creation_order()
+    tracked = bool(creation_order & h5py.h5p.CRT_ORDER_TRACKED)
+    index_type = h5py.h5.INDEX_CRT_ORDER if tracked else h5py.h5.INDEX_NAME
+    group.id.links.iterate(
+        collect,
+        idx=offset,
+        idx_type=index_type,
+        order=h5py.h5.ITER_INC,
+    )
+    return names
+
+
+def _classify_link(link: Any) -> tuple[LinkKind, str | None, str | None]:
+    if isinstance(link, h5py.HardLink):
+        return LinkKind.HARD, None, None
+    if isinstance(link, h5py.SoftLink):
+        return LinkKind.SOFT, str(link.path), None
+    if isinstance(link, h5py.ExternalLink):
+        return LinkKind.EXTERNAL, str(link.path), str(link.filename)
+    if link is None:
+        return LinkKind.UNKNOWN, None, None
+    return LinkKind.USER_DEFINED, None, None
+
+
+def _object_kind(obj: Any) -> ObjectKind:
+    if isinstance(obj, h5py.Group):
+        return ObjectKind.GROUP
+    if isinstance(obj, h5py.Dataset):
+        return ObjectKind.DATASET
+    if isinstance(obj, h5py.Datatype):
+        return ObjectKind.NAMED_DATATYPE
+    return ObjectKind.UNKNOWN
+
+
+def _object_token(obj: h5py.Group | h5py.Dataset | h5py.Datatype) -> str:
+    info = h5py.h5o.get_info(obj.id)
+    address = getattr(info, "addr", hash(obj.id))
+    # Номер открытого файла HDF5 меняется между короткими сессиями, поэтому
+    # идентичность строится из физического пути и адреса заголовка объекта.
+    filename = Path(str(obj.file.filename)).expanduser().resolve()
+    return f"{filename}:{address}"
+
+
+def _dataset_layout(dataset: h5py.Dataset) -> str:
+    try:
+        layout = dataset.id.get_create_plist().get_layout()
+    except (RuntimeError, ValueError):
+        return "unknown"
+    return {
+        h5py.h5d.COMPACT: "compact",
+        h5py.h5d.CONTIGUOUS: "contiguous",
+        h5py.h5d.CHUNKED: "chunked",
+        h5py.h5d.VIRTUAL: "virtual",
+    }.get(layout, f"unknown ({layout})")
+
+
+def _dataset_properties(dataset: h5py.Dataset, warnings: list[str]) -> list[tuple[str, str]]:
+    shape_text = "NULL" if dataset.shape is None else str(tuple(int(v) for v in dataset.shape))
+    maxshape = None if dataset.maxshape is None else tuple(dataset.maxshape)
+    properties: list[tuple[str, str]] = [
+        ("shape", shape_text),
+        ("rank", "NULL" if dataset.shape is None else str(dataset.ndim)),
+        ("dtype", str(dataset.dtype)),
+        ("size", str(dataset.size)),
+        ("logical_bytes", str(dataset.nbytes)),
+        ("storage_bytes", str(dataset.id.get_storage_size())),
+        ("layout", _dataset_layout(dataset)),
+        ("chunks", str(dataset.chunks)),
+        ("maxshape", str(maxshape)),
+        ("compression", str(dataset.compression)),
+        ("compression_options", str(dataset.compression_opts)),
+        ("shuffle", str(dataset.shuffle)),
+        ("fletcher32", str(dataset.fletcher32)),
+        ("scaleoffset", str(dataset.scaleoffset)),
+        ("fill_value", _display_value(dataset.fillvalue)),
+        ("is_virtual", str(dataset.is_virtual)),
+        ("is_dimension_scale", str(dataset.is_scale)),
+    ]
+    external = dataset.external
+    if external:
+        properties.append(("external_storage", _display_value(external)))
+    try:
+        filter_ids = tuple(int(value) for value in dataset.filter_ids)
+        filter_names = tuple(str(value) for value in dataset.filter_names)
+    except AttributeError:
+        filter_ids, filter_names = _low_level_filters(dataset)
+    properties.append(("filter_ids", str(filter_ids)))
+    properties.append(("filter_names", str(filter_names)))
+    if dataset.is_virtual:
+        try:
+            sources = dataset.virtual_sources()
+            properties.append(("virtual_source_count", str(len(sources))))
+            properties.append(("virtual_sources", _display_value(sources)))
+        except (RuntimeError, ValueError) as exc:
+            warnings.append(f"Cannot inspect virtual mappings: {exc}")
+    try:
+        scale_labels = tuple(str(dataset.dims[index].label) for index in range(dataset.ndim))
+        properties.append(("dimension_labels", str(scale_labels)))
+    except (RuntimeError, TypeError, ValueError) as exc:
+        warnings.append(f"Cannot inspect dimension scales: {exc}")
+    return properties
+
+
+def _low_level_filters(dataset: h5py.Dataset) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    plist = dataset.id.get_create_plist()
+    ids: list[int] = []
+    names: list[str] = []
+    for index in range(plist.get_nfilters()):
+        filter_id, _flags, _values, name = plist.get_filter(index)
+        ids.append(int(filter_id))
+        names.append(name.decode(errors="replace") if isinstance(name, bytes) else str(name))
+    return tuple(ids), tuple(names)
+
+
+def _attribute_info(attributes: h5py.AttributeManager, name: str) -> AttributeInfo:
+    attribute_id = attributes.get_id(name)
+    dtype = attribute_id.dtype
+    shape = tuple(int(size) for size in attribute_id.shape)
+    try:
+        value = attributes[name]
+        value_text = _display_value(value)
+        size = int(np.asarray(value).size)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        value_text = f"<unavailable: {exc}>"
+        size = 0
+    return AttributeInfo(
+        name=str(name),
+        dtype=str(dtype),
+        shape=shape,
+        value_text=value_text,
+        editable=_dtype_is_editable(dtype),
+        size=size,
+    )
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bytes):
+        return repr(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, np.ndarray):
+        return str(
+            np.array2string(
+                value,
+                threshold=_VALUE_PREVIEW_ITEMS,
+                edgeitems=3,
+            )
+        )
+    if isinstance(value, (list, tuple)) and len(value) > _VALUE_PREVIEW_ITEMS:
+        preview = list(value[:_VALUE_PREVIEW_ITEMS])
+        return f"{preview!r} … ({len(value)} items)"
+    return repr(value)
+
+
+def _validate_selection(shape: tuple[int, ...], selection: DatasetSlice) -> DatasetSlice:
+    ndim = len(shape)
+    if selection.row_count <= 0 or selection.column_count <= 0:
+        raise ValueError("Page dimensions must be positive")
+    axes = [axis for axis in (selection.row_axis, selection.column_axis) if axis is not None]
+    if any(axis < 0 or axis >= ndim for axis in axes):
+        raise ValueError("Displayed axis is outside the dataset rank")
+    if len(set(axes)) != len(axes):
+        raise ValueError("Row and column axes must be different")
+    if ndim == 0 and axes:
+        raise ValueError("Scalar datasets do not have display axes")
+    if ndim > 0 and selection.row_axis is None:
+        raise ValueError("A non-scalar dataset requires a row axis")
+    fixed = selection.fixed_indices
+    if len(fixed) != ndim:
+        fixed = (0,) * ndim
+    for axis, index in enumerate(fixed):
+        if axis in axes:
+            continue
+        if index < 0 or index >= shape[axis]:
+            raise ValueError(f"Fixed index {index} is outside axis {axis}")
+    row_size = shape[selection.row_axis] if selection.row_axis is not None else 1
+    column_size = shape[selection.column_axis] if selection.column_axis is not None else 1
+    row_offset = min(max(0, selection.row_offset), max(0, row_size - 1))
+    column_offset = min(max(0, selection.column_offset), max(0, column_size - 1))
+    return DatasetSlice(
+        row_axis=selection.row_axis,
+        column_axis=selection.column_axis,
+        fixed_indices=fixed,
+        row_offset=row_offset,
+        column_offset=column_offset,
+        row_count=selection.row_count,
+        column_count=selection.column_count,
+    )
+
+
+def _read_projection(dataset: h5py.Dataset, selection: DatasetSlice) -> np.ndarray[Any, Any]:
+    if dataset.ndim == 0:
+        return np.asarray(dataset[()]).reshape(1, 1)
+    selectors: list[int | slice] = []
+    for axis, size in enumerate(dataset.shape):
+        if axis == selection.row_axis:
+            stop = min(int(size), selection.row_offset + selection.row_count)
+            selectors.append(slice(selection.row_offset, stop))
+        elif axis == selection.column_axis:
+            stop = min(int(size), selection.column_offset + selection.column_count)
+            selectors.append(slice(selection.column_offset, stop))
+        else:
+            selectors.append(selection.fixed_indices[axis])
+    values = np.asarray(dataset[tuple(selectors)])
+    if selection.column_axis is None:
+        return values.reshape(values.shape[0], 1)
+    if cast(int, selection.row_axis) > selection.column_axis:
+        values = values.T
+    return values.reshape(values.shape[0], values.shape[1])
+
+
+def _validate_element_index(shape: tuple[int, ...], index: tuple[int, ...]) -> tuple[int, ...]:
+    if len(index) != len(shape):
+        raise UnsupportedEditError("Dataset index rank does not match dataset rank")
+    for axis, (value, size) in enumerate(zip(index, shape, strict=True)):
+        if value < 0 or value >= size:
+            raise UnsupportedEditError(f"Index {value} is outside axis {axis}")
+    return index
+
+
+def _dtype_is_editable(dtype: np.dtype[Any]) -> bool:
+    if dtype.fields is not None:
+        return False
+    if h5py.check_dtype(ref=dtype) is not None:
+        return False
+    vlen = h5py.check_dtype(vlen=dtype)
+    if vlen is not None and vlen not in {str, bytes}:
+        return False
+    return dtype.kind in {"b", "i", "u", "f", "c", "S", "U", "O"}
+
+
+def _coerce_scalar(text: str, dtype: np.dtype[Any]) -> Any:
+    if not _dtype_is_editable(dtype):
+        raise UnsupportedEditError(f"Editing dtype {dtype} is not supported safely")
+    enum_values = h5py.check_dtype(enum=dtype)
+    if enum_values and text in enum_values:
+        return enum_values[text]
+    string_info = h5py.check_string_dtype(dtype)
+    if string_info is not None:
+        value: str | bytes
+        if dtype.kind == "S" or string_info.encoding == "ascii":
+            try:
+                parsed = _parse_json_or_text(text)
+                value = (
+                    parsed
+                    if isinstance(parsed, bytes)
+                    else str(parsed).encode(string_info.encoding)
+                )
+            except UnicodeEncodeError as exc:
+                raise UnsupportedEditError(str(exc)) from exc
+            if string_info.length is not None and len(value) > string_info.length:
+                raise UnsupportedEditError(
+                    f"Encoded value is {len(value)} bytes; fixed string allows {string_info.length}"
+                )
+            return value
+        parsed = _parse_json_or_text(text)
+        value = parsed.decode() if isinstance(parsed, bytes) else str(parsed)
+        if (
+            string_info.length is not None
+            and len(value.encode(string_info.encoding)) > string_info.length
+        ):
+            raise UnsupportedEditError("Value does not fit the fixed-length string datatype")
+        return value
+    if dtype.kind == "b":
+        lowered = text.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        raise UnsupportedEditError("Boolean value must be true/false or 1/0")
+    try:
+        array = np.asarray(_parse_json_or_text(text), dtype=dtype)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise UnsupportedEditError(f"Value is not valid for dtype {dtype}: {exc}") from exc
+    if array.size != 1:
+        raise UnsupportedEditError("A dataset cell requires exactly one scalar value")
+    return array.reshape(()).item()
+
+
+def _coerce_attribute(text: str, dtype: np.dtype[Any], shape: tuple[int, ...]) -> Any:
+    if shape == ():
+        return _coerce_scalar(text, dtype)
+    if not _dtype_is_editable(dtype):
+        raise UnsupportedEditError(f"Editing attribute dtype {dtype} is not supported safely")
+    parsed = _parse_json_or_text(text)
+    try:
+        result = np.asarray(parsed, dtype=dtype)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise UnsupportedEditError(f"Attribute value is invalid for dtype {dtype}: {exc}") from exc
+    if result.shape != shape:
+        raise UnsupportedEditError(f"Attribute shape must remain {shape}, got {result.shape}")
+    return result
+
+
+def _parse_json_or_text(text: str) -> Any:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(value, float) and not math.isfinite(value):
+        raise UnsupportedEditError("Non-finite JSON numbers must be entered as a typed scalar")
+    return value
+
+
+def _validate_link_name(name: str) -> None:
+    if not name or "/" in name or "\x00" in name:
+        raise UnsupportedEditError("Link name must be non-empty and cannot contain '/' or NUL")
