@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 
@@ -12,6 +13,7 @@ from h5viewer.domain.errors import UnsupportedEditError
 from h5viewer.domain.models import (
     DatasetCreationOptions,
     DatasetSlice,
+    LinkCreationOptions,
     LinkKind,
     ObjectKind,
     default_dataset_slice,
@@ -111,6 +113,39 @@ def test_creates_and_safely_expands_dataset(sample_hdf5: Path, tmp_path: Path) -
     assert repository.dataset_extent("/data/created").shape == (5, 3)
     with pytest.raises(UnsupportedEditError, match="Shrinking"):
         repository.resize_dataset("/data/created", (1, 3))
+
+
+def test_creates_hard_soft_and_external_links(sample_hdf5: Path, tmp_path: Path) -> None:
+    writable_path = tmp_path / "link-operations.h5"
+    shutil.copy2(sample_hdf5, writable_path)
+    repository = H5pyRepository(writable_path, writable=True)
+
+    repository.create_link(
+        "/data",
+        "hard_created",
+        LinkCreationOptions(LinkKind.HARD, "/data/numeric"),
+    )
+    repository.create_link(
+        "/data",
+        "soft_created",
+        LinkCreationOptions(LinkKind.SOFT, "/missing/allowed"),
+    )
+    repository.create_link(
+        "/data",
+        "external_created",
+        LinkCreationOptions(LinkKind.EXTERNAL, "/external_data", "external.h5"),
+    )
+
+    with h5py.File(writable_path, "r") as h5_file:
+        hard = h5_file["/data"].get("hard_created", getlink=True)
+        soft = h5_file["/data"].get("soft_created", getlink=True)
+        external = h5_file["/data"].get("external_created", getlink=True)
+        assert isinstance(hard, h5py.HardLink)
+        assert h5_file["/data/hard_created"].id == h5_file["/data/numeric"].id
+        assert isinstance(soft, h5py.SoftLink)
+        assert soft.path == "/missing/allowed"
+        assert isinstance(external, h5py.ExternalLink)
+        assert external.filename == "external.h5"
 
 
 def test_validation_terminates_on_hard_link_cycle(sample_hdf5: Path) -> None:

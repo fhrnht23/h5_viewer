@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
 from h5viewer.application.commands import (
     CreateDatasetCommand,
     CreateGroupCommand,
+    CreateLinkCommand,
+    DeleteLinkCommand,
     MoveLinkCommand,
 )
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import LinkRef, ObjectKind, split_hdf5_path
-from h5viewer.presentation.qt.dialogs import DatasetCreationDialog
+from h5viewer.presentation.qt.dialogs import DatasetCreationDialog, LinkCreationDialog
 from h5viewer.presentation.qt.models import HdfTreeModel
 from h5viewer.presentation.qt.translations import tr
 
@@ -221,11 +223,22 @@ class BrowserPane(QWidget):
         create_dataset = QAction(tr("Pane", "Create dataset…"), menu)
         create_dataset.triggered.connect(lambda: self._create_dataset(link))
         menu.addAction(create_dataset)
+        create_link = QAction(tr("Pane", "Create link…"), menu)
+        create_link.triggered.connect(lambda: self._create_link(link))
+        menu.addAction(create_link)
         menu.addSeparator()
         rename = QAction(tr("Pane", "Rename…"), menu)
         rename.setEnabled(link is not None and link.path != "/")
         rename.triggered.connect(lambda: self._rename_link(link))
         menu.addAction(rename)
+        move = QAction(tr("Pane", "Move to…"), menu)
+        move.setEnabled(link is not None and link.path != "/")
+        move.triggered.connect(lambda: self._move_link(link))
+        menu.addAction(move)
+        delete = QAction(tr("Pane", "Delete…"), menu)
+        delete.setEnabled(link is not None and link.path != "/")
+        delete.triggered.connect(lambda: self._delete_link(link))
+        menu.addAction(delete)
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def _create_group(self, selected: LinkRef | None) -> None:
@@ -266,6 +279,25 @@ class BrowserPane(QWidget):
         self.refresh()
         self.content_changed.emit(self._session)
 
+    def _create_link(self, selected: LinkRef | None) -> None:
+        """Создать HDF5-ссылку в выбранной или родительской группе."""
+        if self._session is None:
+            return
+        parent_path = self._target_group(selected)
+        dialog = LinkCreationDialog(parent_path, self._session.original_path, self)
+        if dialog.exec() != LinkCreationDialog.DialogCode.Accepted:
+            return
+        if not self._ensure_editing(self._session):
+            return
+        request = dialog.request()
+        try:
+            self._session.execute(CreateLinkCommand(parent_path, request.name, request.options))
+        except H5ViewerError as exc:
+            QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
+            return
+        self.refresh()
+        self.content_changed.emit(self._session)
+
     @staticmethod
     def _target_group(selected: LinkRef | None) -> str:
         """Выбрать группу назначения по текущему объекту панели."""
@@ -293,6 +325,49 @@ class BrowserPane(QWidget):
         destination = f"/{name}" if parent_path == "/" else f"{parent_path}/{name}"
         try:
             self._session.execute(MoveLinkCommand(selected.path, destination))
+        except H5ViewerError as exc:
+            QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
+            return
+        self.refresh()
+        self.content_changed.emit(self._session)
+
+    def _move_link(self, selected: LinkRef | None) -> None:
+        """Переместить ссылку по полному пути внутри текущего файла."""
+        if self._session is None or selected is None or selected.path == "/":
+            return
+        destination, accepted = QInputDialog.getText(
+            self,
+            tr("Pane", "Move object"),
+            tr("Pane", "Destination HDF5 path"),
+            text=selected.path,
+        )
+        if not accepted or not destination or destination == selected.path:
+            return
+        if not self._ensure_editing(self._session):
+            return
+        try:
+            self._session.execute(MoveLinkCommand(selected.path, destination))
+        except H5ViewerError as exc:
+            QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
+            return
+        self.refresh()
+        self.content_changed.emit(self._session)
+
+    def _delete_link(self, selected: LinkRef | None) -> None:
+        """Удалить ссылку обратимой командой после подтверждения."""
+        if self._session is None or selected is None or selected.path == "/":
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("Dialog", "Confirm"),
+            tr("Pane", "Delete the selected link and its unreferenced object?"),
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        if not self._ensure_editing(self._session):
+            return
+        try:
+            self._session.execute(DeleteLinkCommand(selected.path))
         except H5ViewerError as exc:
             QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
             return

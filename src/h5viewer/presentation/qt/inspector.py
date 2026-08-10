@@ -70,6 +70,7 @@ class ObjectInspector(QTabWidget):
         self._dataset_shape: tuple[int, ...] | None = None
         self._build_ui()
         self.retranslate_ui()
+        self.clear_inspector()
 
     def _build_ui(self) -> None:
         self.data_page = QWidget(self)
@@ -216,7 +217,7 @@ class ObjectInspector(QTabWidget):
         self.preview_text.setPlainText(tr("Inspector", "Select an object to inspect it"))
         self.raw_text.clear()
         self.data_message.setText(tr("Inspector", "Select a dataset"))
-        self.resize_dataset_button.setEnabled(False)
+        self._set_dataset_controls_enabled(False)
 
     def show_object(self, session: DocumentSession, link: LinkRef) -> None:
         """Показать выбранную ссылку и, если возможно, её целевой объект."""
@@ -238,16 +239,16 @@ class ObjectInspector(QTabWidget):
         self._populate_link_info(link, self._details)
         self._populate_raw(self._details)
         if link.object_kind is ObjectKind.DATASET and link.shape is not None:
-            self.resize_dataset_button.setEnabled(True)
+            self.resize_dataset_button.setEnabled(bool(link.shape))
             self._configure_dataset(link.shape)
             self._load_dataset_page()
             self.setCurrentWidget(self.data_page)
         elif link.object_kind is ObjectKind.DATASET:
-            self.resize_dataset_button.setEnabled(False)
+            self._set_dataset_controls_enabled(False)
             self.dataset_model.clear()
             self.data_message.setText(tr("Inspector", "No data"))
         else:
-            self.resize_dataset_button.setEnabled(False)
+            self._set_dataset_controls_enabled(False)
             self.dataset_model.clear()
             self.data_message.setText(tr("Inspector", "Select a dataset"))
             self.preview_text.setPlainText(
@@ -289,6 +290,19 @@ class ObjectInspector(QTabWidget):
             self.row_offset,
             self.column_offset,
             self.load_page_button,
+        ):
+            widget.setEnabled(enabled)
+
+    def _set_dataset_controls_enabled(self, enabled: bool) -> None:
+        """Единообразно переключить элементы управления dataset."""
+        for widget in (
+            self.row_axis,
+            self.column_axis,
+            self.fixed_indices,
+            self.row_offset,
+            self.column_offset,
+            self.load_page_button,
+            self.resize_dataset_button,
         ):
             widget.setEnabled(enabled)
 

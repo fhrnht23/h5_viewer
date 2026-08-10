@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +27,8 @@ from h5viewer.domain.models import (
     DatasetExtent,
     DatasetPage,
     DatasetSlice,
+    DeletedLinkSnapshot,
+    LinkCreationOptions,
     LinkKind,
     LinkRef,
     ObjectDetails,
@@ -452,6 +455,149 @@ class H5pyRepository:
                 raise UnsupportedEditError(f"Cannot resize dataset: {exc}") from exc
             h5_file.flush()
 
+    def create_link(
+        self,
+        parent_path: str,
+        name: str,
+        options: LinkCreationOptions,
+    ) -> str:
+        parent_path = normalize_hdf5_path(parent_path)
+        _validate_link_name(name)
+        destination = join_hdf5_path(parent_path, name)
+        if not options.target_path or "\x00" in options.target_path:
+            raise UnsupportedEditError("Link target must not be empty")
+        with self._open(write=True) as h5_file:
+            parent = _require_group(h5_file, parent_path)
+            if parent.get(name, getlink=True) is not None:
+                raise UnsupportedEditError(f"Link already exists: {destination}")
+            try:
+                if options.link_kind is LinkKind.HARD:
+                    target = h5_file[normalize_hdf5_path(options.target_path)]
+                    parent[name] = target
+                elif options.link_kind is LinkKind.SOFT:
+                    parent[name] = h5py.SoftLink(options.target_path)
+                elif options.link_kind is LinkKind.EXTERNAL:
+                    if not options.external_file or "\x00" in options.external_file:
+                        raise UnsupportedEditError("External filename must not be empty")
+                    parent[name] = h5py.ExternalLink(
+                        options.external_file,
+                        options.target_path,
+                    )
+                else:
+                    raise UnsupportedEditError(
+                        f"Creating {options.link_kind.value} links is not supported"
+                    )
+            except KeyError as exc:
+                raise ObjectNotFoundError(
+                    f"Link target does not exist: {options.target_path}"
+                ) from exc
+            except (OSError, TypeError, ValueError) as exc:
+                raise UnsupportedEditError(f"Cannot create link: {exc}") from exc
+            h5_file.flush()
+        return destination
+
+    def delete_link_with_snapshot(self, path: str) -> DeletedLinkSnapshot:
+        normalized = normalize_hdf5_path(path)
+        if normalized == "/":
+            raise UnsupportedEditError("The root group cannot be deleted")
+        parent_path, name = split_hdf5_path(normalized)
+        backup_path: Path | None = None
+        try:
+            with self._open(write=True) as h5_file:
+                parent = _require_group(h5_file, parent_path)
+                link = parent.get(name, getlink=True)
+                if link is None:
+                    raise ObjectNotFoundError(normalized)
+                if isinstance(link, h5py.SoftLink):
+                    snapshot = DeletedLinkSnapshot(LinkKind.SOFT, target_path=str(link.path))
+                elif isinstance(link, h5py.ExternalLink):
+                    snapshot = DeletedLinkSnapshot(
+                        LinkKind.EXTERNAL,
+                        target_path=str(link.path),
+                        external_file=str(link.filename),
+                    )
+                elif isinstance(link, h5py.HardLink):
+                    target = parent[name]
+                    alternate = _find_alternate_hard_link(
+                        h5_file,
+                        normalized,
+                        _object_address(target),
+                    )
+                    if alternate is not None:
+                        snapshot = DeletedLinkSnapshot(
+                            LinkKind.HARD,
+                            alternate_hard_path=alternate,
+                        )
+                    else:
+                        backup_path = self._path.with_name(
+                            f".{self._path.name}.{uuid.uuid4().hex}.h5viewer-undo"
+                        )
+                        with h5py.File(backup_path, "w") as backup:
+                            h5_file.copy(
+                                normalized,
+                                backup["/"],
+                                name="snapshot",
+                                expand_soft=False,
+                                expand_external=False,
+                                expand_refs=False,
+                                without_attrs=False,
+                            )
+                            backup.flush()
+                        snapshot = DeletedLinkSnapshot(
+                            LinkKind.HARD,
+                            backup_path=backup_path,
+                        )
+                else:
+                    raise UnsupportedEditError("Deleting this link type is not supported")
+                del parent[name]
+                h5_file.flush()
+                return snapshot
+        except Exception:
+            if backup_path is not None:
+                backup_path.unlink(missing_ok=True)
+            raise
+
+    def restore_deleted_link(self, path: str, snapshot: DeletedLinkSnapshot) -> None:
+        normalized = normalize_hdf5_path(path)
+        parent_path, name = split_hdf5_path(normalized)
+        with self._open(write=True) as h5_file:
+            parent = _require_group(h5_file, parent_path)
+            if parent.get(name, getlink=True) is not None:
+                raise UnsupportedEditError(f"Link already exists: {normalized}")
+            if snapshot.link_kind is LinkKind.SOFT and snapshot.target_path is not None:
+                parent[name] = h5py.SoftLink(snapshot.target_path)
+            elif (
+                snapshot.link_kind is LinkKind.EXTERNAL
+                and snapshot.target_path is not None
+                and snapshot.external_file is not None
+            ):
+                parent[name] = h5py.ExternalLink(
+                    snapshot.external_file,
+                    snapshot.target_path,
+                )
+            elif snapshot.link_kind is LinkKind.HARD:
+                if (
+                    snapshot.alternate_hard_path is not None
+                    and snapshot.alternate_hard_path in h5_file
+                ):
+                    parent[name] = h5_file[snapshot.alternate_hard_path]
+                elif snapshot.backup_path is not None and snapshot.backup_path.is_file():
+                    with h5py.File(snapshot.backup_path, "r") as backup:
+                        backup.copy(
+                            "/snapshot",
+                            parent,
+                            name=name,
+                            expand_soft=False,
+                            expand_external=False,
+                            expand_refs=False,
+                            without_attrs=False,
+                        )
+                else:
+                    raise ObjectNotFoundError("Undo snapshot for the hard link is unavailable")
+            else:
+                raise UnsupportedEditError("Invalid deleted-link snapshot")
+            h5_file.flush()
+
     def delete_link(self, path: str) -> None:
         normalized = normalize_hdf5_path(path)
         parent_path, name = split_hdf5_path(normalized)
@@ -670,12 +816,51 @@ def _object_kind(obj: Any) -> ObjectKind:
 
 
 def _object_token(obj: h5py.Group | h5py.Dataset | h5py.Datatype) -> str:
-    info = h5py.h5o.get_info(obj.id)
-    address = getattr(info, "addr", hash(obj.id))
+    address = _object_address(obj)
     # Номер открытого файла HDF5 меняется между короткими сессиями, поэтому
     # идентичность строится из физического пути и адреса заголовка объекта.
     filename = Path(str(obj.file.filename)).expanduser().resolve()
     return f"{filename}:{address}"
+
+
+def _object_address(obj: h5py.Group | h5py.Dataset | h5py.Datatype) -> int:
+    """Вернуть адрес заголовка объекта внутри физического HDF5-файла."""
+    info = h5py.h5o.get_info(obj.id)
+    return int(getattr(info, "addr", hash(obj.id)))
+
+
+def _find_alternate_hard_link(
+    h5_file: h5py.File,
+    excluded_path: str,
+    target_address: int,
+) -> str | None:
+    """Найти доступный извне alias того же объекта для точного undo."""
+    root = h5_file["/"]
+    pending: list[tuple[str, h5py.Group]] = [("/", root)]
+    visited_groups: set[int] = set()
+    while pending:
+        group_path, group = pending.pop()
+        group_address = _object_address(group)
+        if group_address in visited_groups:
+            continue
+        visited_groups.add(group_address)
+        for name in group:
+            link = group.get(name, getlink=True)
+            if not isinstance(link, h5py.HardLink):
+                continue
+            candidate_path = join_hdf5_path(group_path, name)
+            obj = group.get(name)
+            if obj is None:
+                continue
+            if (
+                candidate_path != excluded_path
+                and not candidate_path.startswith(f"{excluded_path}/")
+                and _object_address(obj) == target_address
+            ):
+                return candidate_path
+            if isinstance(obj, h5py.Group) and _object_address(obj) not in visited_groups:
+                pending.append((candidate_path, obj))
+    return None
 
 
 def _dataset_layout(dataset: h5py.Dataset) -> str:

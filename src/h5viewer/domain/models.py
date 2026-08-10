@@ -34,6 +34,26 @@ class LinkKind(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class LinkCreationOptions:
+    """Параметры новой hard, soft или external link."""
+
+    link_kind: LinkKind
+    target_path: str
+    external_file: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeletedLinkSnapshot:
+    """Достаточные сведения для точного восстановления удалённой ссылки."""
+
+    link_kind: LinkKind
+    target_path: str | None = None
+    external_file: str | None = None
+    alternate_hard_path: str | None = None
+    backup_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FileFingerprint:
     """Недорогой отпечаток для обнаружения внешних изменений файла."""
 

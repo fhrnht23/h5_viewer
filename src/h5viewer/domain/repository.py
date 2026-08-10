@@ -11,6 +11,8 @@ from h5viewer.domain.models import (
     DatasetExtent,
     DatasetPage,
     DatasetSlice,
+    DeletedLinkSnapshot,
+    LinkCreationOptions,
     LinkRef,
     ObjectDetails,
     ValidationReport,
@@ -77,6 +79,20 @@ class HdfRepository(Protocol):
         allow_shrink: bool = False,
     ) -> None:
         """Изменить размеры chunked dataset с явным контролем уменьшения."""
+
+    def create_link(
+        self,
+        parent_path: str,
+        name: str,
+        options: LinkCreationOptions,
+    ) -> str:
+        """Создать hard, soft или external link и вернуть её путь."""
+
+    def delete_link_with_snapshot(self, path: str) -> DeletedLinkSnapshot:
+        """Удалить ссылку, подготовив дисковый snapshot при необходимости."""
+
+    def restore_deleted_link(self, path: str, snapshot: DeletedLinkSnapshot) -> None:
+        """Точно восстановить ранее удалённую ссылку."""
 
     def delete_link(self, path: str) -> None:
         """Удалить одну ссылку из родительской группы."""

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import weakref
+from typing import ClassVar
+
 from PySide6.QtCore import QCoreApplication, QObject, QSettings, QTranslator, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -15,6 +18,10 @@ _RU: dict[str, str] = {
     "&Yes": "Да",
     "No": "Нет",
     "&No": "Нет",
+    "New": "Новый",
+    "Open": "Открыть",
+    "Edit mode": "Правка",
+    "Discard": "Отменить",
     "File": "Файл",
     "Edit": "Правка",
     "View": "Вид",
@@ -33,6 +40,8 @@ _RU: dict[str, str] = {
     "Refresh": "Обновить",
     "Copy →": "Копировать →",
     "← Copy": "← Копировать",
+    "Move →": "Переместить →",
+    "← Move": "← Переместить",
     "Dark theme": "Тёмная тема",
     "Russian": "Русский",
     "English": "Английский",
@@ -90,7 +99,10 @@ _RU: dict[str, str] = {
     "Save changes before closing?": "Сохранить изменения перед закрытием?",
     "Create group…": "Создать группу…",
     "Create dataset…": "Создать набор данных…",
+    "Create link…": "Создать ссылку…",
     "Rename…": "Переименовать…",
+    "Move to…": "Переместить в…",
+    "Delete…": "Удалить…",
     "Group name": "Имя группы",
     "New name": "Новое имя",
     "Create group": "Создание группы",
@@ -109,6 +121,37 @@ _RU: dict[str, str] = {
         "Объект будет скопирован без раскрытия soft/external links и references. Продолжить?"
     ),
     "Object copied": "Объект скопирован",
+    "The root group cannot be moved": "Корневую группу нельзя перемещать",
+    "Move object": "Перемещение объекта",
+    "Object moved": "Объект перемещён",
+    (
+        "Moving between files changes two independent working copies and cannot be saved "
+        "atomically. Save the destination first, then the source, or discard both. Continue?"
+    ): (
+        "Перемещение между файлами изменяет две независимые рабочие копии и не может быть "
+        "сохранено атомарно. Сначала сохраните назначение, затем источник, либо отмените оба. "
+        "Продолжить?"
+    ),
+    "Object moved; save destination, then source": (
+        "Объект перемещён; сохраните назначение, затем источник"
+    ),
+    "Move undone": "Перемещение отменено",
+    "Move repeated": "Перемещение повторено",
+    "Destination HDF5 path": "Путь назначения HDF5",
+    "Delete the selected link and its unreferenced object?": (
+        "Удалить выбранную ссылку и объект, если на него больше нет ссылок?"
+    ),
+    "Create link": "Создание ссылки",
+    "Hard link": "Жёсткая ссылка",
+    "Soft link": "Мягкая ссылка",
+    "External link": "Внешняя ссылка",
+    "Browse…": "Обзор…",
+    "Link type": "Тип ссылки",
+    "Target HDF5 path": "Целевой путь HDF5",
+    "Enter a valid link name": "Введите корректное имя ссылки",
+    "Enter a target HDF5 path": "Введите целевой путь HDF5",
+    "Select an external HDF5 file": "Выберите внешний файл HDF5",
+    "Select external HDF5 file": "Выбор внешнего файла HDF5",
     "Resize…": "Изменить размер…",
     "Resize dataset": "Изменение размера набора данных",
     "Parent group": "Родительская группа",
@@ -231,6 +274,7 @@ class LanguageManager(QObject):
     """Управляет текущим языком и сохраняет выбор пользователя."""
 
     language_changed = Signal(str)
+    _active_manager: ClassVar[weakref.ReferenceType[LanguageManager] | None] = None
 
     def __init__(self, application: QApplication) -> None:
         super().__init__()
@@ -251,10 +295,14 @@ class LanguageManager(QObject):
     def set_language(self, language: str) -> None:
         """Установить язык и уведомить виджеты о необходимости обновить текст."""
         language = language if language in {"ru", "en"} else "ru"
+        previous = self._active_manager() if self._active_manager is not None else None
+        if previous is not None and previous is not self and previous._language == "ru":
+            self._application.removeTranslator(previous._translator)
         if self._language == "ru":
             self._application.removeTranslator(self._translator)
         self._language = language
         if language == "ru":
             self._application.installTranslator(self._translator)
+        self.__class__._active_manager = weakref.ref(self)
         self._settings.setValue("ui/language", language)
         self.language_changed.emit(language)

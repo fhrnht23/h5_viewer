@@ -11,14 +11,16 @@ import pytest
 from h5viewer.application.commands import (
     CopyObjectCommand,
     CreateDatasetCommand,
+    CreateLinkCommand,
     DeleteAttributeCommand,
+    DeleteLinkCommand,
     ResizeDatasetCommand,
     SetAttributeCommand,
     WriteDatasetValueCommand,
 )
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import SaveConflictError
-from h5viewer.domain.models import DatasetCreationOptions
+from h5viewer.domain.models import DatasetCreationOptions, LinkCreationOptions, LinkKind
 from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 
@@ -182,3 +184,56 @@ def test_dataset_creation_and_resize_are_undoable(sample_hdf5: Path, tmp_path: P
         assert dataset.shape == (4, 2)
         assert dataset.maxshape == (None, 2)
         assert dataset[3, 1] == 7
+
+
+def test_link_creation_and_deletion_are_undoable(sample_hdf5: Path, tmp_path: Path) -> None:
+    path = tmp_path / "link-commands.h5"
+    shutil.copy2(sample_hdf5, path)
+    session = _session(path)
+    session.begin_edit()
+
+    session.execute(
+        CreateLinkCommand(
+            "/data",
+            "soft_command",
+            LinkCreationOptions(LinkKind.SOFT, "/missing/target"),
+        )
+    )
+    assert any(
+        link.name == "soft_command" for link in session.repository().list_children("/data", 0, 100)
+    )
+    session.undo()
+    assert all(
+        link.name != "soft_command" for link in session.repository().list_children("/data", 0, 100)
+    )
+    session.redo()
+
+    alias_token = next(
+        link.object_token
+        for link in session.repository().list_children("/data", 0, 100)
+        if link.name == "numeric"
+    )
+    session.execute(DeleteLinkCommand("/numeric_alias"))
+    session.undo()
+    restored_alias = next(
+        link
+        for link in session.repository().list_children("/", 0, 100)
+        if link.name == "numeric_alias"
+    )
+    assert restored_alias.object_token == alias_token
+
+    session.execute(DeleteLinkCommand("/data/scalar"))
+    undo_files = tuple(path.parent.glob("*.h5viewer-undo"))
+    assert len(undo_files) == 1
+    session.undo()
+    assert session.repository().read_dataset_value("/data/scalar", ()) == 3.5
+
+    session.execute(DeleteLinkCommand("/loops"))
+    session.undo()
+    loops_link = next(
+        link for link in session.repository().list_children("/", 0, 100) if link.name == "loops"
+    )
+    self_link = session.repository().list_children("/loops", 0, 10)[0]
+    assert self_link.object_token == loops_link.object_token
+    session.discard()
+    assert not tuple(path.parent.glob("*.h5viewer-undo"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 from PySide6.QtWidgets import (
@@ -10,16 +11,24 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from h5viewer.domain.models import DatasetCreationOptions, DatasetExtent
+from h5viewer.domain.models import (
+    DatasetCreationOptions,
+    DatasetExtent,
+    LinkCreationOptions,
+    LinkKind,
+)
 from h5viewer.presentation.qt.translations import tr
 
 
@@ -29,6 +38,112 @@ class DatasetCreationRequest:
 
     name: str
     options: DatasetCreationOptions
+
+
+@dataclass(frozen=True, slots=True)
+class LinkCreationRequest:
+    """Проверенный результат диалога создания HDF5-ссылки."""
+
+    name: str
+    options: LinkCreationOptions
+
+
+class LinkCreationDialog(QDialog):
+    """Собирает параметры hard, soft или external link."""
+
+    def __init__(
+        self,
+        parent_path: str,
+        document_path: Path,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._document_path = document_path
+        self._request: LinkCreationRequest | None = None
+        self.setWindowTitle(tr("LinkDialog", "Create link"))
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"{tr('LinkDialog', 'Parent group')}: {parent_path}"))
+        form = QFormLayout()
+        self.name_edit = QLineEdit(self)
+        self.kind_combo = QComboBox(self)
+        self.kind_combo.addItem(tr("LinkDialog", "Hard link"), LinkKind.HARD)
+        self.kind_combo.addItem(tr("LinkDialog", "Soft link"), LinkKind.SOFT)
+        self.kind_combo.addItem(tr("LinkDialog", "External link"), LinkKind.EXTERNAL)
+        self.kind_combo.currentIndexChanged.connect(self._update_controls)
+        self.target_edit = QLineEdit("/", self)
+        self.external_file_edit = QLineEdit(self)
+        self.browse_button = QPushButton(tr("LinkDialog", "Browse…"), self)
+        self.browse_button.clicked.connect(self._browse_external_file)
+        external_row = QHBoxLayout()
+        external_row.addWidget(self.external_file_edit, 1)
+        external_row.addWidget(self.browse_button)
+        form.addRow(tr("LinkDialog", "Name"), self.name_edit)
+        form.addRow(tr("LinkDialog", "Link type"), self.kind_combo)
+        form.addRow(tr("LinkDialog", "Target HDF5 path"), self.target_edit)
+        form.addRow(tr("LinkDialog", "External file"), external_row)
+        layout.addLayout(form)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.buttons.accepted.connect(self._validate_and_accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self._update_controls()
+
+    def request(self) -> LinkCreationRequest:
+        """Вернуть проверенные параметры после успешного принятия диалога."""
+        if self._request is None:
+            self._request = self._make_request()
+        return self._request
+
+    def _validate_and_accept(self) -> None:
+        try:
+            self._request = self._make_request()
+        except ValueError as exc:
+            QMessageBox.warning(
+                self,
+                tr("Dialog", "Error"),
+                tr("LinkDialog", str(exc)),
+            )
+            return
+        self.accept()
+
+    def _make_request(self) -> LinkCreationRequest:
+        name = self.name_edit.text().strip()
+        target = self.target_edit.text().strip()
+        kind = LinkKind(str(self.kind_combo.currentData()))
+        external_file = self.external_file_edit.text().strip()
+        if not name or "/" in name or "\x00" in name:
+            raise ValueError("Enter a valid link name")
+        if not target or "\x00" in target:
+            raise ValueError("Enter a target HDF5 path")
+        if kind is LinkKind.EXTERNAL and (not external_file or "\x00" in external_file):
+            raise ValueError("Select an external HDF5 file")
+        return LinkCreationRequest(
+            name,
+            LinkCreationOptions(
+                link_kind=kind,
+                target_path=target,
+                external_file=external_file if kind is LinkKind.EXTERNAL else None,
+            ),
+        )
+
+    def _browse_external_file(self) -> None:
+        filename, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            tr("LinkDialog", "Select external HDF5 file"),
+            str(self._document_path.parent),
+            tr("Dialog", "HDF5 files (*.h5 *.hdf5 *.he5);;All files (*)"),
+        )
+        if filename:
+            self.external_file_edit.setText(filename)
+
+    def _update_controls(self, _index: int = -1) -> None:
+        external = str(self.kind_combo.currentData()) == LinkKind.EXTERNAL.value
+        self.external_file_edit.setEnabled(external)
+        self.browse_button.setEnabled(external)
 
 
 class DatasetCreationDialog(QDialog):

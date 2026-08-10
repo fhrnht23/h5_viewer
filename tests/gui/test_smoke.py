@@ -6,8 +6,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from h5viewer.domain.models import DatasetExtent
-from h5viewer.presentation.qt.dialogs import DatasetCreationDialog, ResizeDatasetDialog
+from h5viewer.domain.models import DatasetExtent, LinkKind
+from h5viewer.presentation.qt.dialogs import (
+    DatasetCreationDialog,
+    LinkCreationDialog,
+    ResizeDatasetDialog,
+)
 from h5viewer.presentation.qt.main_window import MainWindow
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager
@@ -95,3 +99,14 @@ def test_dataset_dialogs_build_typed_requests(qtbot: object, qapp: object) -> No
     qtbot.addWidget(resize)  # type: ignore[attr-defined]
     resize.shape_edit.setText("8, 3")
     assert resize.new_shape() == (8, 3)
+
+    link = LinkCreationDialog("/data", Path("/tmp/source.h5"))
+    qtbot.addWidget(link)  # type: ignore[attr-defined]
+    link.name_edit.setText("external_link")
+    link.kind_combo.setCurrentIndex(2)
+    link.target_edit.setText("/measurements/signal")
+    link.external_file_edit.setText("other.h5")
+    link_request = link.request()
+    assert link_request.name == "external_link"
+    assert link_request.options.link_kind is LinkKind.EXTERNAL
+    assert link_request.options.external_file == "other.h5"

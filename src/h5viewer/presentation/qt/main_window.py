@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
@@ -18,7 +18,11 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
-from h5viewer.application.commands import CopyObjectCommand
+from h5viewer.application.commands import (
+    CopyObjectCommand,
+    DeleteLinkCommand,
+    MoveLinkCommand,
+)
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import LinkRef, ObjectKind
@@ -30,6 +34,17 @@ from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager, tr
+
+
+@dataclass(slots=True)
+class CoordinatedMove:
+    """Пара связанных команд межфайлового перемещения."""
+
+    source_session: DocumentSession
+    destination_session: DocumentSession
+    source_command: DeleteLinkCommand
+    destination_command: CopyObjectCommand
+    applied: bool = True
 
 
 class MainWindow(QMainWindow):
@@ -45,6 +60,7 @@ class MainWindow(QMainWindow):
         self._theme_manager = theme_manager
         self._settings = QSettings()
         self._documents: list[DocumentSession] = []
+        self._coordinated_moves: list[CoordinatedMove] = []
         self._active_session: DocumentSession | None = None
         self._active_link: LinkRef | None = None
         self._build_ui()
@@ -128,6 +144,16 @@ class MainWindow(QMainWindow):
         self.copy_left_action.triggered.connect(
             lambda: self.copy_between_panes(self.right_pane, self.left_pane)
         )
+        self.move_right_action = QAction("", self)
+        self.move_right_action.setShortcut("F6")
+        self.move_right_action.triggered.connect(
+            lambda: self.move_between_panes(self.left_pane, self.right_pane)
+        )
+        self.move_left_action = QAction("", self)
+        self.move_left_action.setShortcut("Shift+F6")
+        self.move_left_action.triggered.connect(
+            lambda: self.move_between_panes(self.right_pane, self.left_pane)
+        )
 
         self.dark_theme_action = QAction("", self, checkable=True)
         self.dark_theme_action.setChecked(self._theme_manager.dark)
@@ -159,7 +185,14 @@ class MainWindow(QMainWindow):
         self.edit_menu = self.menuBar().addMenu("")
         self.edit_menu.addActions([self.enable_edit_action, self.undo_action, self.redo_action])
         self.edit_menu.addSeparator()
-        self.edit_menu.addActions([self.copy_right_action, self.copy_left_action])
+        self.edit_menu.addActions(
+            [
+                self.copy_right_action,
+                self.copy_left_action,
+                self.move_right_action,
+                self.move_left_action,
+            ]
+        )
         self.view_menu = self.menuBar().addMenu("")
         self.view_menu.addActions([self.refresh_action, self.dark_theme_action])
         self.language_menu = self.menuBar().addMenu("")
@@ -178,7 +211,14 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         self.toolbar.addActions([self.undo_action, self.redo_action, self.refresh_action])
         self.toolbar.addSeparator()
-        self.toolbar.addActions([self.copy_right_action, self.copy_left_action])
+        self.toolbar.addActions(
+            [
+                self.copy_right_action,
+                self.copy_left_action,
+                self.move_right_action,
+                self.move_left_action,
+            ]
+        )
         self.addToolBar(self.toolbar)
 
     def _connect_signals(self) -> None:
@@ -213,6 +253,8 @@ class MainWindow(QMainWindow):
             (self.refresh_action, "Refresh"),
             (self.copy_right_action, "Copy →"),
             (self.copy_left_action, "← Copy"),
+            (self.move_right_action, "Move →"),
+            (self.move_left_action, "← Move"),
             (self.dark_theme_action, "Dark theme"),
             (self.russian_action, "Russian"),
             (self.english_action, "English"),
@@ -220,6 +262,22 @@ class MainWindow(QMainWindow):
         )
         for action, source in action_texts:
             action.setText(tr("MainWindow", source))
+        toolbar_texts = (
+            (self.new_action, "New"),
+            (self.open_action, "Open"),
+            (self.enable_edit_action, "Edit mode"),
+            (self.save_action, "Save"),
+            (self.discard_action, "Discard"),
+            (self.undo_action, "Undo"),
+            (self.redo_action, "Redo"),
+            (self.refresh_action, "Refresh"),
+            (self.copy_right_action, "F5 →"),
+            (self.copy_left_action, "← Shift+F5"),
+            (self.move_right_action, "F6 →"),
+            (self.move_left_action, "← Shift+F6"),
+        )
+        for action, source in toolbar_texts:
+            action.setIconText(tr("Toolbar", source))
         self.left_pane.retranslate_ui()
         self.right_pane.retranslate_ui()
         self.inspector.retranslate_ui()
@@ -401,6 +459,8 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     def undo(self) -> None:
+        if self._undo_coordinated_move():
+            return
         if self._active_session is None:
             return
         try:
@@ -411,6 +471,8 @@ class MainWindow(QMainWindow):
         self._refresh_session(self._active_session)
 
     def redo(self) -> None:
+        if self._redo_coordinated_move():
+            return
         if self._active_session is None:
             return
         try:
@@ -510,6 +572,120 @@ class MainWindow(QMainWindow):
         self._refresh_session(destination_session)
         self.statusBar().showMessage(tr("MainWindow", "Object copied"), 5000)
 
+    def move_between_panes(self, source_pane: BrowserPane, destination_pane: BrowserPane) -> None:
+        """Переместить выбранную ссылку внутри файла или между двумя рабочими копиями."""
+        source_session = source_pane.session
+        destination_session = destination_pane.session
+        source_link = source_pane.current_link()
+        destination_link = destination_pane.current_link()
+        if source_session is None or destination_session is None or source_link is None:
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Information"),
+                tr("MainWindow", "Select a source object and a destination document"),
+            )
+            return
+        if source_link.path == "/":
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Information"),
+                tr("MainWindow", "The root group cannot be moved"),
+            )
+            return
+        destination_group = "/"
+        if destination_link is not None:
+            destination_group = (
+                destination_link.path
+                if destination_link.object_kind is ObjectKind.GROUP
+                else destination_link.parent_path
+            )
+        destination_name, accepted = QInputDialog.getText(
+            self,
+            tr("MainWindow", "Move object"),
+            tr("MainWindow", "Destination name"),
+            text=source_link.name,
+        )
+        if not accepted or not destination_name:
+            return
+        destination_path = (
+            f"/{destination_name}"
+            if destination_group == "/"
+            else f"{destination_group}/{destination_name}"
+        )
+        if source_session is destination_session:
+            if destination_path == source_link.path or not self.ensure_editing(source_session):
+                return
+            try:
+                source_session.execute(MoveLinkCommand(source_link.path, destination_path))
+            except H5ViewerError as exc:
+                self._show_error(str(exc))
+                return
+            self._refresh_session(source_session)
+            self.statusBar().showMessage(tr("MainWindow", "Object moved"), 5000)
+            return
+
+        answer = QMessageBox.warning(
+            self,
+            tr("Dialog", "Warning"),
+            tr(
+                "MainWindow",
+                "Moving between files changes two independent working copies and cannot be saved "
+                "atomically. Save the destination first, then the source, or discard both. "
+                "Continue?",
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        destination_started = not destination_session.is_editing
+        source_started = not source_session.is_editing
+        if not self.ensure_editing(destination_session):
+            return
+        if not self.ensure_editing(source_session):
+            if destination_started and not destination_session.is_dirty:
+                destination_session.discard()
+            return
+        destination_command = CopyObjectCommand(
+            source_file=source_session.active_path,
+            source_path=source_link.path,
+            destination_group=destination_group,
+            destination_name=destination_name,
+            copy_operation=copy_hdf5_object,
+        )
+        source_command = DeleteLinkCommand(source_link.path)
+        try:
+            destination_session.execute(destination_command)
+            try:
+                source_session.execute(source_command)
+            except (H5ViewerError, OSError):
+                destination_session.undo()
+                destination_session.commands.discard_redo()
+                raise
+        except (H5ViewerError, OSError) as exc:
+            if destination_started and not destination_session.is_dirty:
+                destination_session.discard()
+            if source_started and not source_session.is_dirty:
+                source_session.discard()
+            self._show_error(str(exc))
+            return
+        self._coordinated_moves.append(
+            CoordinatedMove(
+                source_session,
+                destination_session,
+                source_command,
+                destination_command,
+            )
+        )
+        self._refresh_session(source_session)
+        self._refresh_session(destination_session)
+        self._active_session = destination_session
+        self._update_actions()
+        self._update_title()
+        self.statusBar().showMessage(
+            tr("MainWindow", "Object moved; save destination, then source"),
+            8000,
+        )
+
     def show_about(self) -> None:
         QMessageBox.about(
             self,
@@ -583,8 +759,52 @@ class MainWindow(QMainWindow):
         can_copy = bool(self.left_pane.current_link() or self.right_pane.current_link())
         self.copy_right_action.setEnabled(has_document and can_copy)
         self.copy_left_action.setEnabled(has_document and can_copy)
+        self.move_right_action.setEnabled(has_document and can_copy)
+        self.move_left_action.setEnabled(has_document and can_copy)
         self.undo_action.setEnabled(bool(session and session.commands.can_undo))
         self.redo_action.setEnabled(bool(session and session.commands.can_redo))
+
+    def _undo_coordinated_move(self) -> bool:
+        """Атомарно для UI отменить ближайшее парное перемещение."""
+        for operation in reversed(self._coordinated_moves):
+            if (
+                operation.applied
+                and self._active_session
+                in {operation.source_session, operation.destination_session}
+                and operation.source_session.commands.is_next_undo(operation.source_command)
+                and operation.destination_session.commands.is_next_undo(
+                    operation.destination_command
+                )
+            ):
+                operation.source_session.undo()
+                operation.destination_session.undo()
+                operation.applied = False
+                self._refresh_session(operation.source_session)
+                self._refresh_session(operation.destination_session)
+                self.statusBar().showMessage(tr("MainWindow", "Move undone"), 5000)
+                return True
+        return False
+
+    def _redo_coordinated_move(self) -> bool:
+        """Повторно применить ближайшее отменённое парное перемещение."""
+        for operation in self._coordinated_moves:
+            if (
+                not operation.applied
+                and self._active_session
+                in {operation.source_session, operation.destination_session}
+                and operation.source_session.commands.is_next_redo(operation.source_command)
+                and operation.destination_session.commands.is_next_redo(
+                    operation.destination_command
+                )
+            ):
+                operation.destination_session.redo()
+                operation.source_session.redo()
+                operation.applied = True
+                self._refresh_session(operation.source_session)
+                self._refresh_session(operation.destination_session)
+                self.statusBar().showMessage(tr("MainWindow", "Move repeated"), 5000)
+                return True
+        return False
 
     def _update_title(self) -> None:
         title = tr("MainWindow", "H5 Viewer")

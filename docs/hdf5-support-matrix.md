@@ -4,7 +4,7 @@
 
 | Возможность | Просмотр | Редактирование | Примечание |
 |---|---:|---:|---|
-| Groups и root group | ✅ | ◐ | Создание и rename; удаление группы пока отсутствует в UI |
+| Groups и root group | ✅ | ✅ | Создание, move/rename и удаление с disk-backed undo |
 | Numeric datasets | ✅ | ✅ | Создание, отдельные значения и безопасное расширение |
 | Scalar datasets | ✅ | ✅ | Для поддерживаемых dtype |
 | Null/empty datasets | ✅ | — | Корректно показываются без чтения payload |
@@ -15,9 +15,9 @@
 | Array/vlen sequence dtype | ◐ | — | Metadata и доступное значение |
 | Object/region references | ✅ | — | Metadata и представление значения; переход к цели ещё не реализован |
 | Attributes | ✅ | ✅ | Scalar и JSON-совместимые массивы с неизменным shape/dtype |
-| Hard links и aliases | ✅ | ◐ | Identity и циклы; создание hard link пока отсутствует |
-| Soft links | ✅ | — | Показывается target и broken state |
-| External links | ✅ | — | Показывается файл, target и broken state |
+| Hard links и aliases | ✅ | ✅ | Identity, циклы, создание и точное undo alias |
+| Soft links | ✅ | ✅ | Создание, target, broken state и undo |
+| External links | ✅ | ✅ | Создание, файл, target, broken state и undo |
 | Committed datatype | ✅ | — | Metadata |
 | Chunking/layout/fill value | ✅ | ✅ | Настройка при создании dataset |
 | Filter pipeline | ✅ | ◐ | Создание с gzip/lzf, shuffle и Fletcher32 |
@@ -25,7 +25,7 @@
 | Dimension scales | ✅ | — | Флаги и labels |
 | External raw storage | ✅ | — | Metadata |
 | Copy между файлами | ✅ | ✅ | Без раскрытия soft/external/reference targets; undoable |
-| Move между файлами | — | — | Требует координации двух независимых commit |
+| Move между файлами | ✅ | ✅ | Парный undo/redo; сохранение двух файлов неатомарно |
 | Metadata search/compare | — | — | Следующий этап |
 
 Уменьшение dataset через UI намеренно отключено: HDF5 сразу удаляет отброшенную область, поэтому

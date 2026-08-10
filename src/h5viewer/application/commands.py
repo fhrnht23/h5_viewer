@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from h5viewer.domain.errors import ObjectNotFoundError
-from h5viewer.domain.models import DatasetCreationOptions, join_hdf5_path
+from h5viewer.domain.models import (
+    DatasetCreationOptions,
+    DeletedLinkSnapshot,
+    LinkCreationOptions,
+    join_hdf5_path,
+)
 from h5viewer.domain.repository import HdfRepository
 
 CopyOperation = Callable[[Path, str, Path, str, str], None]
@@ -27,6 +32,10 @@ class EditCommand(ABC):
     @abstractmethod
     def revert(self, repository: HdfRepository) -> None:
         """Отменить команду."""
+
+    def dispose(self) -> None:
+        """Освободить внешние ресурсы команды после удаления из стека."""
+        return None
 
 
 @dataclass(slots=True)
@@ -161,6 +170,50 @@ class ResizeDatasetCommand(EditCommand):
 
 
 @dataclass(slots=True)
+class CreateLinkCommand(EditCommand):
+    """Создать HDF5-ссылку одного из поддерживаемых видов."""
+
+    parent_path: str
+    name: str
+    options: LinkCreationOptions
+    label: str = "Create link"
+
+    @property
+    def created_path(self) -> str:
+        return join_hdf5_path(self.parent_path, self.name)
+
+    def apply(self, repository: HdfRepository) -> None:
+        repository.create_link(self.parent_path, self.name, self.options)
+
+    def revert(self, repository: HdfRepository) -> None:
+        repository.delete_link(self.created_path)
+
+
+@dataclass(slots=True)
+class DeleteLinkCommand(EditCommand):
+    """Удалить ссылку с дисковым snapshot для безопасного undo."""
+
+    path: str
+    label: str = "Delete link"
+    _snapshot: DeletedLinkSnapshot | None = field(default=None, init=False, repr=False)
+
+    def apply(self, repository: HdfRepository) -> None:
+        if self._snapshot is None:
+            self._snapshot = repository.delete_link_with_snapshot(self.path)
+        else:
+            repository.delete_link(self.path)
+
+    def revert(self, repository: HdfRepository) -> None:
+        if self._snapshot is None:
+            raise RuntimeError("Snapshot удалённой ссылки не был создан")
+        repository.restore_deleted_link(self.path, self._snapshot)
+
+    def dispose(self) -> None:
+        if self._snapshot is not None and self._snapshot.backup_path is not None:
+            self._snapshot.backup_path.unlink(missing_ok=True)
+
+
+@dataclass(slots=True)
 class MoveLinkCommand(EditCommand):
     """Переименовать или переместить одну ссылку HDF5."""
 
@@ -231,9 +284,20 @@ class CommandStack:
     def redo_label(self) -> str | None:
         return self._commands[self._position].label if self.can_redo else None
 
+    def is_next_undo(self, command: EditCommand) -> bool:
+        """Проверить идентичность следующей команды undo."""
+        return self.can_undo and self._commands[self._position - 1] is command
+
+    def is_next_redo(self, command: EditCommand) -> bool:
+        """Проверить идентичность следующей команды redo."""
+        return self.can_redo and self._commands[self._position] is command
+
     def execute(self, command: EditCommand, repository: HdfRepository) -> None:
         if self._position < len(self._commands):
+            removed = self._commands[self._position :]
             del self._commands[self._position :]
+            for discarded in removed:
+                discarded.dispose()
             if self._clean_position > self._position:
                 self._clean_position = -1
         command.apply(repository)
@@ -254,7 +318,20 @@ class CommandStack:
         command.apply(repository)
         self._position += 1
 
+    def discard_redo(self) -> None:
+        """Удалить redo-ветку после отката неудачной составной операции."""
+        if self._position >= len(self._commands):
+            return
+        removed = self._commands[self._position :]
+        del self._commands[self._position :]
+        for command in removed:
+            command.dispose()
+        if self._clean_position > self._position:
+            self._clean_position = -1
+
     def clear(self) -> None:
+        for command in self._commands:
+            command.dispose()
         self._commands.clear()
         self._position = 0
         self._clean_position = 0
