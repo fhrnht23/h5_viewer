@@ -23,6 +23,8 @@ _RU: dict[str, str] = {
     "Undo": "Отменить",
     "Redo": "Повторить",
     "Refresh": "Обновить",
+    "Copy →": "Копировать →",
+    "← Copy": "← Копировать",
     "Dark theme": "Тёмная тема",
     "Russian": "Русский",
     "English": "Английский",
@@ -84,6 +86,19 @@ _RU: dict[str, str] = {
     "New name": "Новое имя",
     "Create group": "Создание группы",
     "Rename object": "Переименование объекта",
+    "Copy object": "Копирование объекта",
+    "Destination name": "Имя в назначении",
+    "Select a source object and a destination document": (
+        "Выберите исходный объект и документ назначения"
+    ),
+    "The root group cannot be copied": "Корневую группу нельзя копировать",
+    "Save or discard changes in the source file before copying it to another file": (
+        "Сохраните или отмените изменения исходного файла перед копированием в другой файл"
+    ),
+    "The object will be copied without expanding soft/external links or references. Continue?": (
+        "Объект будет скопирован без раскрытия soft/external links и references. Продолжить?"
+    ),
+    "Object copied": "Объект скопирован",
     "Attribute name": "Имя атрибута",
     "Attribute value (text or JSON)": "Значение атрибута (текст или JSON)",
     "Add attribute": "Добавление атрибута",

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from h5viewer.domain.errors import ObjectNotFoundError
 from h5viewer.domain.models import join_hdf5_path
 from h5viewer.domain.repository import HdfRepository
+
+CopyOperation = Callable[[Path, str, Path, str, str], None]
 
 
 class EditCommand(ABC):
@@ -128,6 +132,34 @@ class MoveLinkCommand(EditCommand):
 
     def revert(self, repository: HdfRepository) -> None:
         repository.move_link(self.destination_path, self.source_path)
+
+
+@dataclass(slots=True)
+class CopyObjectCommand(EditCommand):
+    """Скопировать объект или ссылку в рабочий файл назначения."""
+
+    source_file: Path
+    source_path: str
+    destination_group: str
+    destination_name: str
+    copy_operation: CopyOperation = field(repr=False)
+    label: str = "Copy object"
+
+    @property
+    def destination_path(self) -> str:
+        return join_hdf5_path(self.destination_group, self.destination_name)
+
+    def apply(self, repository: HdfRepository) -> None:
+        self.copy_operation(
+            self.source_file,
+            self.source_path,
+            repository.path,
+            self.destination_group,
+            self.destination_name,
+        )
+
+    def revert(self, repository: HdfRepository) -> None:
+        repository.delete_link(self.destination_path)
 
 
 class CommandStack:

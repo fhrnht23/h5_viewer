@@ -8,6 +8,11 @@ import h5py
 import numpy as np
 import pytest
 
+from h5viewer.presentation.qt.platform import prepare_qt_platform_plugins
+
+# pytest-qt создаёт QApplication раньше GUI-тестов, поэтому подготавливаем Qt заранее.
+prepare_qt_platform_plugins()
+
 
 @pytest.fixture
 def sample_hdf5(tmp_path: Path) -> Path:

@@ -9,6 +9,7 @@ from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QSplitter,
@@ -16,9 +17,11 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+from h5viewer.application.commands import CopyObjectCommand
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
-from h5viewer.domain.models import LinkRef
+from h5viewer.domain.models import LinkRef, ObjectKind
+from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.files import create_empty_hdf5
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 from h5viewer.infrastructure.hdf5.validation import validate_hdf5_in_subprocess
@@ -112,8 +115,18 @@ class MainWindow(QMainWindow):
         self.refresh_action = QAction(
             style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "", self
         )
-        self.refresh_action.setShortcut(QKeySequence.StandardKey.Refresh)
+        self.refresh_action.setShortcut(QKeySequence("Ctrl+R"))
         self.refresh_action.triggered.connect(self.refresh_active)
+        self.copy_right_action = QAction("", self)
+        self.copy_right_action.setShortcut("F5")
+        self.copy_right_action.triggered.connect(
+            lambda: self.copy_between_panes(self.left_pane, self.right_pane)
+        )
+        self.copy_left_action = QAction("", self)
+        self.copy_left_action.setShortcut("Shift+F5")
+        self.copy_left_action.triggered.connect(
+            lambda: self.copy_between_panes(self.right_pane, self.left_pane)
+        )
 
         self.dark_theme_action = QAction("", self, checkable=True)
         self.dark_theme_action.setChecked(self._theme_manager.dark)
@@ -144,6 +157,8 @@ class MainWindow(QMainWindow):
         self.file_menu.addAction(self.exit_action)
         self.edit_menu = self.menuBar().addMenu("")
         self.edit_menu.addActions([self.enable_edit_action, self.undo_action, self.redo_action])
+        self.edit_menu.addSeparator()
+        self.edit_menu.addActions([self.copy_right_action, self.copy_left_action])
         self.view_menu = self.menuBar().addMenu("")
         self.view_menu.addActions([self.refresh_action, self.dark_theme_action])
         self.language_menu = self.menuBar().addMenu("")
@@ -161,6 +176,8 @@ class MainWindow(QMainWindow):
         self.toolbar.addActions([self.enable_edit_action, self.save_action, self.discard_action])
         self.toolbar.addSeparator()
         self.toolbar.addActions([self.undo_action, self.redo_action, self.refresh_action])
+        self.toolbar.addSeparator()
+        self.toolbar.addActions([self.copy_right_action, self.copy_left_action])
         self.addToolBar(self.toolbar)
 
     def _connect_signals(self) -> None:
@@ -192,6 +209,8 @@ class MainWindow(QMainWindow):
             (self.undo_action, "Undo"),
             (self.redo_action, "Redo"),
             (self.refresh_action, "Refresh"),
+            (self.copy_right_action, "Copy →"),
+            (self.copy_left_action, "← Copy"),
             (self.dark_theme_action, "Dark theme"),
             (self.russian_action, "Russian"),
             (self.english_action, "English"),
@@ -413,6 +432,82 @@ class MainWindow(QMainWindow):
             return
         self._refresh_session(self._active_session)
 
+    def copy_between_panes(self, source_pane: BrowserPane, destination_pane: BrowserPane) -> None:
+        """Скопировать выбранный объект между панелями как отдельную undoable-команду."""
+        source_session = source_pane.session
+        destination_session = destination_pane.session
+        source_link = source_pane.current_link()
+        destination_link = destination_pane.current_link()
+        if source_session is None or destination_session is None or source_link is None:
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Information"),
+                tr("MainWindow", "Select a source object and a destination document"),
+            )
+            return
+        if source_link.path == "/":
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Information"),
+                tr("MainWindow", "The root group cannot be copied"),
+            )
+            return
+        if source_session is not destination_session and source_session.is_editing:
+            QMessageBox.warning(
+                self,
+                tr("Dialog", "Warning"),
+                tr(
+                    "MainWindow",
+                    "Save or discard changes in the source file before copying it to another file",
+                ),
+            )
+            return
+        destination_group = "/"
+        if destination_link is not None:
+            destination_group = (
+                destination_link.path
+                if destination_link.object_kind is ObjectKind.GROUP
+                else destination_link.parent_path
+            )
+        destination_name, accepted = QInputDialog.getText(
+            self,
+            tr("MainWindow", "Copy object"),
+            tr("MainWindow", "Destination name"),
+            text=source_link.name,
+        )
+        if not accepted or not destination_name:
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("Dialog", "Confirm"),
+            tr(
+                "MainWindow",
+                "The object will be copied without expanding soft/external links "
+                "or references. Continue?",
+            ),
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        if not self.ensure_editing(destination_session):
+            return
+        try:
+            destination_session.execute(
+                CopyObjectCommand(
+                    source_file=source_session.active_path,
+                    source_path=source_link.path,
+                    destination_group=destination_group,
+                    destination_name=destination_name,
+                    copy_operation=copy_hdf5_object,
+                )
+            )
+        except H5ViewerError as exc:
+            self._show_error(str(exc))
+            return
+        self._active_session = destination_session
+        self._active_link = None
+        self._refresh_session(destination_session)
+        self.statusBar().showMessage(tr("MainWindow", "Object copied"), 5000)
+
     def show_about(self) -> None:
         QMessageBox.about(
             self,
@@ -463,6 +558,9 @@ class MainWindow(QMainWindow):
         self.discard_action.setEnabled(editing)
         self.enable_edit_action.setEnabled(has_document and not editing)
         self.refresh_action.setEnabled(has_document)
+        can_copy = bool(self.left_pane.current_link() or self.right_pane.current_link())
+        self.copy_right_action.setEnabled(has_document and can_copy)
+        self.copy_left_action.setEnabled(has_document and can_copy)
         self.undo_action.setEnabled(bool(session and session.commands.can_undo))
         self.redo_action.setEnabled(bool(session and session.commands.can_redo))
 

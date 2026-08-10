@@ -24,6 +24,6 @@
 | VDS mappings | ✅ | — | Metadata mappings |
 | Dimension scales | ✅ | — | Флаги и labels |
 | External raw storage | ✅ | — | Metadata |
-| Copy/move между файлами | — | — | Следующий этап |
+| Copy между файлами | ✅ | ✅ | Без раскрытия soft/external/reference targets; undoable |
+| Move между файлами | — | — | Требует координации двух независимых commit |
 | Metadata search/compare | — | — | Следующий этап |
-

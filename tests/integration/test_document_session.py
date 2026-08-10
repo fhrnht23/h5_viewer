@@ -9,12 +9,14 @@ import h5py
 import pytest
 
 from h5viewer.application.commands import (
+    CopyObjectCommand,
     DeleteAttributeCommand,
     SetAttributeCommand,
     WriteDatasetValueCommand,
 )
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import SaveConflictError
+from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 
 
@@ -97,3 +99,47 @@ def test_discard_removes_working_copy(sample_hdf5: Path, tmp_path: Path) -> None
     session.discard()
     assert not working_path.exists()
     assert session.active_path == path
+
+
+def test_copy_between_documents_is_undoable(sample_hdf5: Path, tmp_path: Path) -> None:
+    source = tmp_path / "copy-source.h5"
+    destination = tmp_path / "copy-destination.h5"
+    shutil.copy2(sample_hdf5, source)
+    with h5py.File(destination, "w") as h5_file:
+        h5_file.create_group("target")
+    session = _session(destination)
+    session.begin_edit()
+    command = CopyObjectCommand(
+        source_file=source,
+        source_path="/data/numeric",
+        destination_group="/target",
+        destination_name="copied",
+        copy_operation=copy_hdf5_object,
+    )
+    session.execute(command)
+    assert session.repository().details("/target/copied").kind.value == "dataset"
+    session.undo()
+    assert session.repository().child_count("/target") == 0
+    session.redo()
+    assert session.repository().details("/target/copied").kind.value == "dataset"
+    session.discard()
+
+
+def test_copy_preserves_indirect_links(sample_hdf5: Path, tmp_path: Path) -> None:
+    destination = tmp_path / "links-destination.h5"
+    with h5py.File(destination, "w") as h5_file:
+        h5_file.create_group("target")
+
+    for source_name in ("soft_numeric", "broken_soft", "external"):
+        copy_hdf5_object(sample_hdf5, f"/{source_name}", destination, "/target", source_name)
+
+    with h5py.File(destination, "r") as h5_file:
+        soft_link = h5_file["/target"].get("soft_numeric", getlink=True)
+        broken_link = h5_file["/target"].get("broken_soft", getlink=True)
+        external_link = h5_file["/target"].get("external", getlink=True)
+        assert isinstance(soft_link, h5py.SoftLink)
+        assert soft_link.path == "/data/numeric"
+        assert isinstance(broken_link, h5py.SoftLink)
+        assert broken_link.path == "/missing/object"
+        assert isinstance(external_link, h5py.ExternalLink)
+        assert external_link.path == "/external_data"

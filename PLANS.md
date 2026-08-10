@@ -36,7 +36,8 @@ Updated: 2026-08-10
 ### M3 — richer HDF5 operations
 
 - [ ] Dataset creation dialog and resize.
-- [ ] Link creation and copy/move inside and across documents.
+- [x] Undoable object/link copying inside and across documents.
+- [ ] Link creation and coordinated move inside and across documents.
 - [ ] Object/reference inspectors and VDS/dimension-scale details.
 - [ ] Metadata search and chunked comparison.
 - [ ] Export CSV/NPY and optional visualization.
