@@ -47,6 +47,30 @@ class ReferenceSourceKind(str, Enum):
     DATASET = "dataset"
 
 
+class MetadataField(str, Enum):
+    """Поле метаданных, в котором найден поисковый запрос."""
+
+    PATH = "path"
+    OBJECT_KIND = "object_kind"
+    LINK_KIND = "link_kind"
+    DATASET_METADATA = "dataset_metadata"
+    ATTRIBUTE_NAME = "attribute_name"
+    ATTRIBUTE_VALUE = "attribute_value"
+
+
+class DifferenceKind(str, Enum):
+    """Категория различия между двумя HDF5-документами."""
+
+    ONLY_LEFT = "only_left"
+    ONLY_RIGHT = "only_right"
+    LINK = "link"
+    OBJECT_KIND = "object_kind"
+    METADATA = "metadata"
+    ATTRIBUTE = "attribute"
+    DATA = "data"
+    ERROR = "error"
+
+
 @dataclass(frozen=True, slots=True)
 class LinkCreationOptions:
     """Параметры новой hard, soft или external link."""
@@ -177,6 +201,78 @@ class VirtualMappingInfo:
     source_dataset: str
     virtual_selection: str
     source_selection: str
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataSearchOptions:
+    """Безопасные ограничения поиска по метаданным одного файла."""
+
+    query: str
+    case_sensitive: bool = False
+    include_attribute_values: bool = True
+    max_results: int = 1000
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataMatch:
+    """Одно совпадение поискового запроса в метаданных HDF5."""
+
+    path: str
+    object_kind: ObjectKind
+    field: MetadataField
+    name: str
+    value_preview: str
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataSearchReport:
+    """Результат ограниченного и отменяемого поиска метаданных."""
+
+    matches: tuple[MetadataMatch, ...]
+    scanned_links: int
+    truncated: bool = False
+    cancelled: bool = False
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonOptions:
+    """Ограничения порционного сравнения двух HDF5-файлов."""
+
+    compare_data: bool = True
+    relative_tolerance: float = 0.0
+    absolute_tolerance: float = 0.0
+    max_differences: int = 1000
+    block_bytes: int = 4 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class FileDifference:
+    """Одно структурное, metadata или data-различие двух файлов."""
+
+    path: str
+    kind: DifferenceKind
+    detail: str
+    left_value: str = ""
+    right_value: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class FileComparisonReport:
+    """Итог порционного сравнения с показателями выполненной работы."""
+
+    differences: tuple[FileDifference, ...]
+    compared_objects: int
+    compared_datasets: int
+    compared_elements: int
+    truncated: bool = False
+    cancelled: bool = False
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def identical(self) -> bool:
+        """Проверить отсутствие обнаруженных различий после полного прохода."""
+        return not self.differences and not self.truncated and not self.cancelled
 
 
 @dataclass(frozen=True, slots=True)

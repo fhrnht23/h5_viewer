@@ -7,6 +7,10 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt
 
 from h5viewer.domain.models import DatasetExtent, LinkKind
+from h5viewer.presentation.qt.analysis_dialogs import (
+    FileComparisonDialog,
+    MetadataSearchDialog,
+)
 from h5viewer.presentation.qt.dialogs import (
     DatasetCreationDialog,
     LinkCreationDialog,
@@ -109,6 +113,36 @@ def test_inspector_shows_rich_metadata_and_opens_reference(
 
     window._show_object(document, repository.link("/data/virtual_numeric"))
     assert window.inspector.virtual_mappings_table.rowCount() == 2
+
+
+def test_analysis_dialogs_run_and_use_russian_interface(
+    qtbot: object, qapp: object, sample_hdf5: Path
+) -> None:
+    QSettings().clear()
+    language = LanguageManager(qapp)  # type: ignore[arg-type]
+    language.load()
+    theme = ThemeManager(qapp)  # type: ignore[arg-type]
+    window = MainWindow(language, theme)
+    qtbot.addWidget(window)  # type: ignore[attr-defined]
+    document = window._open_path(sample_hdf5)
+    assert document is not None
+    assert window.search_metadata_action.text() == "Поиск по метаданным…"
+    assert window.compare_panes_action.text() == "Сравнить панели…"
+
+    search = MetadataSearchDialog(document)
+    qtbot.addWidget(search)  # type: ignore[attr-defined]
+    search.query_edit.setText("region_ref")
+    search.run_search()
+    assert search.report is not None
+    assert search.results_table.rowCount() >= 2
+
+    comparison = FileComparisonDialog(document, document)
+    qtbot.addWidget(comparison)  # type: ignore[attr-defined]
+    comparison.compare_data.setChecked(False)
+    comparison.run_comparison()
+    assert comparison.report is not None
+    assert comparison.report.identical
+    assert "совпадают" in comparison.summary_label.text()
 
 
 def test_dataset_dialogs_build_typed_requests(qtbot: object, qapp: object) -> None:

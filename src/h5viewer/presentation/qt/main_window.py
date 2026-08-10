@@ -30,6 +30,10 @@ from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.files import create_empty_hdf5
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 from h5viewer.infrastructure.hdf5.validation import validate_hdf5_in_subprocess
+from h5viewer.presentation.qt.analysis_dialogs import (
+    FileComparisonDialog,
+    MetadataSearchDialog,
+)
 from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
 from h5viewer.presentation.qt.theme import ThemeManager
@@ -154,6 +158,12 @@ class MainWindow(QMainWindow):
         self.move_left_action.triggered.connect(
             lambda: self.move_between_panes(self.right_pane, self.left_pane)
         )
+        self.search_metadata_action = QAction("", self)
+        self.search_metadata_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.search_metadata_action.triggered.connect(self.search_metadata)
+        self.compare_panes_action = QAction("", self)
+        self.compare_panes_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.compare_panes_action.triggered.connect(self.compare_pane_documents)
 
         self.dark_theme_action = QAction("", self, checkable=True)
         self.dark_theme_action.setChecked(self._theme_manager.dark)
@@ -195,6 +205,8 @@ class MainWindow(QMainWindow):
         )
         self.view_menu = self.menuBar().addMenu("")
         self.view_menu.addActions([self.refresh_action, self.dark_theme_action])
+        self.tools_menu = self.menuBar().addMenu("")
+        self.tools_menu.addActions([self.search_metadata_action, self.compare_panes_action])
         self.language_menu = self.menuBar().addMenu("")
         self.language_menu.addActions([self.russian_action, self.english_action])
         self.help_menu = self.menuBar().addMenu("")
@@ -238,6 +250,7 @@ class MainWindow(QMainWindow):
         self.file_menu.setTitle(tr("MainWindow", "File"))
         self.edit_menu.setTitle(tr("MainWindow", "Edit"))
         self.view_menu.setTitle(tr("MainWindow", "View"))
+        self.tools_menu.setTitle(tr("MainWindow", "Tools"))
         self.language_menu.setTitle(tr("MainWindow", "Language"))
         self.help_menu.setTitle(tr("MainWindow", "Help"))
         action_texts = (
@@ -256,6 +269,8 @@ class MainWindow(QMainWindow):
             (self.copy_left_action, "← Copy"),
             (self.move_right_action, "Move →"),
             (self.move_left_action, "← Move"),
+            (self.search_metadata_action, "Search metadata…"),
+            (self.compare_panes_action, "Compare panes…"),
             (self.dark_theme_action, "Dark theme"),
             (self.russian_action, "Russian"),
             (self.english_action, "English"),
@@ -711,6 +726,33 @@ class MainWindow(QMainWindow):
         self._show_object(session, link)
         self.statusBar().showMessage(tr("MainWindow", "Reference target opened"), 5000)
 
+    def search_metadata(self) -> None:
+        """Открыть поиск по metadata активного документа."""
+        if self._active_session is None:
+            return
+        dialog = MetadataSearchDialog(self._active_session, self)
+        dialog.path_activated.connect(self._open_analysis_path)
+        dialog.exec()
+
+    def compare_pane_documents(self) -> None:
+        """Сравнить документы, выбранные в левой и правой панелях."""
+        left_session = self.left_pane.session
+        right_session = self.right_pane.session
+        if left_session is None or right_session is None:
+            return
+        dialog = FileComparisonDialog(left_session, right_session, self)
+        dialog.path_activated.connect(self._open_analysis_path)
+        dialog.exec()
+
+    def _open_analysis_path(self, session: DocumentSession, path: str) -> None:
+        """Открыть путь из результата поиска или сравнения в инспекторе."""
+        try:
+            link = session.repository().link(path)
+        except H5ViewerError as exc:
+            self._show_error(str(exc))
+            return
+        self._show_object(session, link)
+
     def _activate_session(self, session: DocumentSession) -> None:
         self._active_session = session
         self._active_link = None
@@ -767,6 +809,10 @@ class MainWindow(QMainWindow):
         self.discard_action.setEnabled(editing)
         self.enable_edit_action.setEnabled(has_document and not editing)
         self.refresh_action.setEnabled(has_document)
+        self.search_metadata_action.setEnabled(has_document)
+        self.compare_panes_action.setEnabled(
+            self.left_pane.session is not None and self.right_pane.session is not None
+        )
         can_copy = bool(self.left_pane.current_link() or self.right_pane.current_link())
         self.copy_right_action.setEnabled(has_document and can_copy)
         self.copy_left_action.setEnabled(has_document and can_copy)
