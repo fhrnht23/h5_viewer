@@ -71,6 +71,13 @@ class DifferenceKind(str, Enum):
     ERROR = "error"
 
 
+class ExportFormat(str, Enum):
+    """Поддерживаемый формат экспорта значений dataset."""
+
+    CSV = "csv"
+    NPY = "npy"
+
+
 @dataclass(frozen=True, slots=True)
 class LinkCreationOptions:
     """Параметры новой hard, soft или external link."""
@@ -273,6 +280,27 @@ class FileComparisonReport:
     def identical(self) -> bool:
         """Проверить отсутствие обнаруженных различий после полного прохода."""
         return not self.differences and not self.truncated and not self.cancelled
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetExportOptions:
+    """Формат и ограничения порционного экспорта dataset."""
+
+    export_format: ExportFormat
+    selection: DatasetSlice | None = None
+    block_bytes: int = 4 * 1024 * 1024
+    csv_row_bytes_limit: int = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetExportReport:
+    """Итог завершённого или отменённого экспорта dataset."""
+
+    destination: Path
+    exported_elements: int
+    total_elements: int
+    written_bytes: int
+    cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

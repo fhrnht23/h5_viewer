@@ -110,6 +110,10 @@ def test_inspector_shows_rich_metadata_and_opens_reference(
     window._show_object(document, repository.link("/data/numeric"))
     assert window.inspector.dimension_scales_table.rowCount() == 3
     assert window.inspector.dimension_scales_table.item(2, 2).text() == "/data/x"
+    assert window.inspector.export_dataset_button.isEnabled()
+    assert window.inspector.visualize_dataset_button.isEnabled()
+    assert window.inspector.export_dataset_button.text() == "Экспорт…"
+    assert window.inspector.visualize_dataset_button.text() == "Визуализация…"
 
     window._show_object(document, repository.link("/data/virtual_numeric"))
     assert window.inspector.virtual_mappings_table.rowCount() == 2

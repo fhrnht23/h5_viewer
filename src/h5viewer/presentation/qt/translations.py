@@ -229,6 +229,30 @@ _RU: dict[str, str] = {
     "Select an external HDF5 file": "Выберите внешний файл HDF5",
     "Select external HDF5 file": "Выбор внешнего файла HDF5",
     "Resize…": "Изменить размер…",
+    "Export…": "Экспорт…",
+    "Visualize…": "Визуализация…",
+    "NumPy arrays (*.npy)": "Массивы NumPy (*.npy)",
+    "CSV files (*.csv)": "Файлы CSV (*.csv)",
+    "Export dataset": "Экспорт набора данных",
+    "Export cannot replace an HDF5 document": ("Экспорт не может заменить открытый HDF5-документ"),
+    "Exporting dataset…": "Экспорт набора данных…",
+    "Dataset export": "Экспорт набора данных",
+    "Exported {exported} of {total} elements": ("Экспортировано элементов: {exported} из {total}"),
+    "Export cancelled": "Экспорт отменён",
+    "Export completed: {path}": "Экспорт завершён: {path}",
+    "Dataset visualization": "Визуализация набора данных",
+    "Current page: {shape}": "Текущая страница: {shape}",
+    "Magnitude of complex values": "Модуль комплексных значений",
+    "Dataset page is empty": "Страница набора данных пуста",
+    "Only numeric dataset pages can be visualized": (
+        "Визуализация доступна только для числовых наборов данных"
+    ),
+    "Visualization expects a one- or two-dimensional page": (
+        "Для визуализации нужна одномерная или двумерная страница"
+    ),
+    "pyqtgraph is not installed; install the 'plots' extra": (
+        "Модуль pyqtgraph не установлен; установите дополнение 'plots'"
+    ),
     "Resize dataset": "Изменение размера набора данных",
     "Parent group": "Родительская группа",
     "Empty means scalar": "Пустое поле означает скаляр",

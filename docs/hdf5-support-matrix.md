@@ -27,6 +27,8 @@
 | Copy между файлами | ✅ | ✅ | Без раскрытия soft/external/reference targets; undoable |
 | Move между файлами | ✅ | ✅ | Парный undo/redo; сохранение двух файлов неатомарно |
 | Metadata search/compare | ✅ | — | Поиск с лимитом; сравнение структуры и данных блоками до 4 МиБ |
+| Export CSV/NPY | ✅ | — | CSV для полной текущей projection; полный NPY порционным memory map |
+| Numeric visualization | ✅ | — | Line/heatmap текущей страницы; optional `pyqtgraph` |
 
 Уменьшение dataset через UI намеренно отключено: HDF5 сразу удаляет отброшенную область, поэтому
 для корректного undo потребуется дисковый snapshot. Внутреннее уменьшение применяется только при

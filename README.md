@@ -14,6 +14,8 @@ H5 Viewer — кроссплатформенное двухпанельное de
 - показывать шкалы измерений и структурированные соответствия VDS без чтения payload;
 - искать пути, типы, dataset metadata и ограниченные значения атрибутов;
 - сравнивать документы панелей по структуре, атрибутам и данным блоками с настраиваемым допуском;
+- атомарно экспортировать полный dataset в NPY или текущую полную 2-D projection в CSV;
+- показывать line plot и heatmap текущей страницы через опциональный `pyqtgraph`;
 - редактировать поддерживаемые scalar values и атрибуты в безопасной рабочей копии;
 - создавать группы и datasets с настройкой dtype, shape, chunks, compression и fill value;
 - безопасно расширять chunked datasets в пределах maxshape;
@@ -32,6 +34,12 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e '.[dev]'
 h5viewer
+```
+
+Для визуализации числовых datasets установите опциональное дополнение:
+
+```bash
+python -m pip install -e '.[plots]'
 ```
 
 В Windows окружение активируется командой `.venv\Scripts\activate`.

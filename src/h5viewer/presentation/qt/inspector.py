@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -17,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSpinBox,
     QTableView,
@@ -37,7 +41,9 @@ from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import (
     AttributeInfo,
+    DatasetExportOptions,
     DatasetSlice,
+    ExportFormat,
     LinkRef,
     ObjectDetails,
     ObjectKind,
@@ -45,9 +51,14 @@ from h5viewer.domain.models import (
     ReferenceSourceKind,
     default_dataset_slice,
 )
+from h5viewer.infrastructure.hdf5.exporting import export_hdf5_dataset
 from h5viewer.presentation.qt.dialogs import ResizeDatasetDialog
 from h5viewer.presentation.qt.models import DatasetTableModel
 from h5viewer.presentation.qt.translations import tr
+from h5viewer.presentation.qt.visualization import (
+    VisualizationUnavailableError,
+    create_visualization_dialog,
+)
 
 EnsureEditing = Callable[[DocumentSession], bool]
 
@@ -108,6 +119,15 @@ class ObjectInspector(QTabWidget):
         offsets.addWidget(self.resize_dataset_button)
         projection.addRow(offsets)
         data_layout.addLayout(projection)
+        dataset_actions = QHBoxLayout()
+        self.export_dataset_button = QPushButton(self.data_page)
+        self.visualize_dataset_button = QPushButton(self.data_page)
+        self.export_dataset_button.clicked.connect(self._export_dataset)
+        self.visualize_dataset_button.clicked.connect(self._visualize_dataset)
+        dataset_actions.addWidget(self.export_dataset_button)
+        dataset_actions.addWidget(self.visualize_dataset_button)
+        dataset_actions.addStretch(1)
+        data_layout.addLayout(dataset_actions)
         self.data_message = QLabel(self.data_page)
         self.data_message.setWordWrap(True)
         data_layout.addWidget(self.data_message)
@@ -228,6 +248,8 @@ class ObjectInspector(QTabWidget):
         self.column_offset_label.setText(tr("Inspector", "Column offset"))
         self.load_page_button.setText(tr("Inspector", "Load page"))
         self.resize_dataset_button.setText(tr("Inspector", "Resize…"))
+        self.export_dataset_button.setText(tr("Inspector", "Export…"))
+        self.visualize_dataset_button.setText(tr("Inspector", "Visualize…"))
         self.add_attribute_button.setText(tr("Inspector", "Add"))
         self.edit_attribute_button.setText(tr("Inspector", "Change"))
         self.delete_attribute_button.setText(tr("Inspector", "Delete"))
@@ -291,6 +313,7 @@ class ObjectInspector(QTabWidget):
         self.raw_text.clear()
         self.data_message.setText(tr("Inspector", "Select a dataset"))
         self._set_dataset_controls_enabled(False)
+        self._set_dataset_actions_enabled(False, False)
 
     def show_object(self, session: DocumentSession, link: LinkRef) -> None:
         """Показать выбранную ссылку и, если возможно, её целевой объект."""
@@ -312,15 +335,18 @@ class ObjectInspector(QTabWidget):
         self._populate_link_info(link, self._details)
         self._populate_raw(self._details)
         if link.object_kind is ObjectKind.DATASET and link.shape is not None:
+            self._set_dataset_actions_enabled(True, False)
             self.resize_dataset_button.setEnabled(bool(link.shape))
             self._configure_dataset(link.shape)
             self._load_dataset_page()
             self.setCurrentWidget(self.data_page)
         elif link.object_kind is ObjectKind.DATASET:
+            self._set_dataset_actions_enabled(False, False)
             self._set_dataset_controls_enabled(False)
             self.dataset_model.clear()
             self.data_message.setText(tr("Inspector", "No data"))
         else:
+            self._set_dataset_actions_enabled(False, False)
             self._set_dataset_controls_enabled(False)
             self.dataset_model.clear()
             self.data_message.setText(tr("Inspector", "Select a dataset"))
@@ -379,6 +405,15 @@ class ObjectInspector(QTabWidget):
         ):
             widget.setEnabled(enabled)
 
+    def _set_dataset_actions_enabled(
+        self,
+        export_enabled: bool,
+        visualization_enabled: bool,
+    ) -> None:
+        """Переключить действия, зависящие от доступной страницы dataset."""
+        self.export_dataset_button.setEnabled(export_enabled)
+        self.visualize_dataset_button.setEnabled(visualization_enabled)
+
     def _selection(self) -> DatasetSlice | None:
         if self._dataset_shape is None:
             return None
@@ -411,6 +446,7 @@ class ObjectInspector(QTabWidget):
         selection = self._selection()
         if selection is None:
             return
+        self.visualize_dataset_button.setEnabled(False)
         self.dataset_model.load(self._session, self._link.path, selection)
         if self.dataset_model.error:
             self.data_message.setText(self.dataset_model.error)
@@ -418,13 +454,123 @@ class ObjectInspector(QTabWidget):
         page = self.dataset_model.page
         if page is None:
             self.data_message.setText(tr("Inspector", "No data"))
+            self.visualize_dataset_button.setEnabled(False)
             return
         message = f"dtype={page.dtype} · {page.values.shape[0]} × {page.values.shape[1]}"
         if page.warnings:
             message += " · " + "; ".join(page.warnings)
         self.data_message.setText(message)
+        self.visualize_dataset_button.setEnabled(bool(page.values.size))
         self.data_table.resizeColumnsToContents()
         self.status_message.emit(tr("Inspector", "Page loaded"))
+
+    def _export_dataset(self) -> None:
+        """Выбрать формат и атомарно экспортировать текущий dataset."""
+        if self._session is None or self._link is None:
+            return
+        npy_filter = tr("Inspector", "NumPy arrays (*.npy)")
+        csv_filter = tr("Inspector", "CSV files (*.csv)")
+        initial = self._session.original_path.with_name(
+            f"{self._session.original_path.stem}-{self._link.name}.npy"
+        )
+        filename, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            tr("Inspector", "Export dataset"),
+            str(initial),
+            f"{npy_filter};;{csv_filter}",
+        )
+        if not filename:
+            return
+        destination = Path(filename).expanduser().resolve()
+        export_format = (
+            ExportFormat.CSV
+            if destination.suffix.casefold() == ".csv" or selected_filter == csv_filter
+            else ExportFormat.NPY
+        )
+        expected_suffix = ".csv" if export_format is ExportFormat.CSV else ".npy"
+        if not destination.suffix:
+            destination = destination.with_suffix(expected_suffix)
+        if destination in {
+            self._session.active_path.resolve(),
+            self._session.original_path.resolve(),
+        }:
+            self._show_error(tr("Inspector", "Export cannot replace an HDF5 document"))
+            return
+        selection = self._selection() if export_format is ExportFormat.CSV else None
+        if export_format is ExportFormat.CSV and selection is None:
+            return
+        self._run_export(destination, export_format, selection)
+
+    def _run_export(
+        self,
+        destination: Path,
+        export_format: ExportFormat,
+        selection: DatasetSlice | None,
+    ) -> None:
+        """Выполнить экспорт с прогрессом и возможностью безопасной отмены."""
+        assert self._session is not None and self._link is not None
+        progress = QProgressDialog(
+            tr("Inspector", "Exporting dataset…"),
+            tr("Inspector", "Cancel"),
+            0,
+            1000,
+            self,
+        )
+        progress.setWindowTitle(tr("Inspector", "Dataset export"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+
+        def update(exported: int, total: int) -> None:
+            fraction = 0 if total <= 0 else min(1000, int(exported * 1000 / total))
+            progress.setValue(fraction)
+            progress.setLabelText(
+                tr("Inspector", "Exported {exported} of {total} elements").format(
+                    exported=exported,
+                    total=total,
+                )
+            )
+            QApplication.processEvents()
+
+        progress.show()
+        try:
+            report = export_hdf5_dataset(
+                self._session.active_path,
+                self._link.path,
+                destination,
+                DatasetExportOptions(export_format, selection=selection),
+                progress=update,
+                cancelled=progress.wasCanceled,
+            )
+        except H5ViewerError as exc:
+            progress.close()
+            self._show_error(str(exc))
+            return
+        progress.close()
+        if report.cancelled:
+            self.status_message.emit(tr("Inspector", "Export cancelled"))
+            return
+        self.status_message.emit(
+            tr("Inspector", "Export completed: {path}").format(path=report.destination)
+        )
+
+    def _visualize_dataset(self) -> None:
+        """Открыть line plot или heatmap для текущей ограниченной страницы."""
+        if self._link is None:
+            return
+        page = self.dataset_model.page
+        if page is None:
+            return
+        try:
+            dialog = create_visualization_dialog(page.values, self._link.path, self)
+        except VisualizationUnavailableError as exc:
+            QMessageBox.information(
+                self,
+                tr("Dialog", "Information"),
+                tr("Visualization", str(exc)),
+            )
+            return
+        dialog.exec()
 
     def _populate_properties(self, details: ObjectDetails) -> None:
         self.properties_table.setRowCount(len(details.properties))
@@ -480,6 +626,7 @@ class ObjectInspector(QTabWidget):
             3, QHeaderView.ResizeMode.Stretch
         )
         self.open_reference_button.setEnabled(False)
+        self._set_dataset_actions_enabled(False, False)
 
     def _reference_source_text(self, reference: ReferenceInfo) -> str:
         """Локализовать источник reference и сохранить точные координаты."""

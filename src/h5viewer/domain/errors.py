@@ -29,3 +29,7 @@ class SaveConflictError(H5ViewerError):
 
 class InsufficientSpaceError(H5ViewerError):
     """На диске недостаточно места для безопасной рабочей копии."""
+
+
+class ExportError(H5ViewerError):
+    """Dataset нельзя безопасно экспортировать с выбранными параметрами."""
