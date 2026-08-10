@@ -33,6 +33,20 @@ class LinkKind(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ReferenceKind(str, Enum):
+    """Тип значения HDF5 reference."""
+
+    OBJECT = "object"
+    REGION = "region"
+
+
+class ReferenceSourceKind(str, Enum):
+    """Место, из которого прочитано значение HDF5 reference."""
+
+    ATTRIBUTE = "attribute"
+    DATASET = "dataset"
+
+
 @dataclass(frozen=True, slots=True)
 class LinkCreationOptions:
     """Параметры новой hard, soft или external link."""
@@ -130,6 +144,42 @@ class AttributeSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ReferenceInfo:
+    """Ограниченная сводка object или region reference без h5py handle."""
+
+    source_kind: ReferenceSourceKind
+    source_name: str
+    reference_kind: ReferenceKind
+    source_index: tuple[int, ...] | None = None
+    target_path: str | None = None
+    target_kind: ObjectKind | None = None
+    object_token: str | None = None
+    selection_type: str | None = None
+    selected_points: int | None = None
+    bounds: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DimensionScaleInfo:
+    """Метка одной оси dataset и прикреплённые к ней шкалы."""
+
+    axis: int
+    label: str
+    scale_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class VirtualMappingInfo:
+    """Одно соответствие виртуальной и исходной областей VDS."""
+
+    source_file: str
+    source_dataset: str
+    virtual_selection: str
+    source_selection: str
+
+
+@dataclass(frozen=True, slots=True)
 class ObjectDetails:
     """Свойства и атрибуты объекта по пути HDF5."""
 
@@ -138,6 +188,9 @@ class ObjectDetails:
     object_token: str | None
     properties: tuple[tuple[str, str], ...] = ()
     attributes: tuple[AttributeInfo, ...] = ()
+    references: tuple[ReferenceInfo, ...] = ()
+    dimension_scales: tuple[DimensionScaleInfo, ...] = ()
+    virtual_mappings: tuple[VirtualMappingInfo, ...] = ()
     warnings: tuple[str, ...] = ()
 
 

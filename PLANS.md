@@ -39,7 +39,7 @@ Updated: 2026-08-10
 - [ ] Destructive dataset shrinking with disk-backed undo snapshots.
 - [x] Undoable object/link copying inside and across documents.
 - [x] Link creation, safe deletion, and coordinated move inside/across documents.
-- [ ] Object/reference inspectors and VDS/dimension-scale details.
+- [x] Object/reference inspectors and VDS/dimension-scale details.
 - [ ] Metadata search and chunked comparison.
 - [ ] Export CSV/NPY and optional visualization.
 

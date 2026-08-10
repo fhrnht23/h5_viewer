@@ -28,18 +28,25 @@ from h5viewer.domain.models import (
     DatasetPage,
     DatasetSlice,
     DeletedLinkSnapshot,
+    DimensionScaleInfo,
     LinkCreationOptions,
     LinkKind,
     LinkRef,
     ObjectDetails,
     ObjectKind,
+    ReferenceInfo,
+    ReferenceKind,
+    ReferenceSourceKind,
     ValidationReport,
+    VirtualMappingInfo,
     join_hdf5_path,
     normalize_hdf5_path,
     split_hdf5_path,
 )
 
 _VALUE_PREVIEW_ITEMS = 24
+_REFERENCE_PREVIEW_ITEMS = 64
+_VIRTUAL_MAPPING_PREVIEW_ITEMS = 256
 
 
 class H5pyRepository:
@@ -94,6 +101,16 @@ class H5pyRepository:
                 object_token=_object_token(root),
                 child_count=len(root),
             )
+
+    def link(self, path: str) -> LinkRef:
+        """Получить описание ссылки, не обходя соседние объекты группы."""
+        normalized = normalize_hdf5_path(path)
+        if normalized == "/":
+            return self.root()
+        parent_path, name = split_hdf5_path(normalized)
+        with self._open() as h5_file:
+            parent = _require_group(h5_file, parent_path)
+            return self._describe_link(parent, name, parent_path)
 
     def child_count(self, group_path: str) -> int:
         normalized = normalize_hdf5_path(group_path)
@@ -213,12 +230,22 @@ class H5pyRepository:
                 properties.append(("dtype", str(obj.dtype)))
 
             attributes = tuple(_attribute_info(obj.attrs, name) for name in obj.attrs)
+            references = list(_attribute_references(h5_file, obj, warnings))
+            dimension_scales: tuple[DimensionScaleInfo, ...] = ()
+            virtual_mappings: tuple[VirtualMappingInfo, ...] = ()
+            if isinstance(obj, h5py.Dataset):
+                references.extend(_dataset_references(h5_file, obj, warnings))
+                dimension_scales = _dimension_scales(obj, warnings)
+                virtual_mappings = _virtual_mappings(obj, warnings)
             return ObjectDetails(
                 path=normalized,
                 kind=kind,
                 object_token=_object_token(obj),
                 properties=tuple(properties),
                 attributes=attributes,
+                references=tuple(references),
+                dimension_scales=dimension_scales,
+                virtual_mappings=virtual_mappings,
                 warnings=tuple(warnings),
             )
 
@@ -912,7 +939,6 @@ def _dataset_properties(dataset: h5py.Dataset, warnings: list[str]) -> list[tupl
         try:
             sources = dataset.virtual_sources()
             properties.append(("virtual_source_count", str(len(sources))))
-            properties.append(("virtual_sources", _display_value(sources)))
         except (RuntimeError, ValueError) as exc:
             warnings.append(f"Cannot inspect virtual mappings: {exc}")
     try:
@@ -953,6 +979,248 @@ def _attribute_info(attributes: h5py.AttributeManager, name: str) -> AttributeIn
         editable=_dtype_is_editable(dtype),
         size=size,
     )
+
+
+def _attribute_references(
+    h5_file: h5py.File,
+    obj: h5py.Group | h5py.Dataset | h5py.Datatype,
+    warnings: list[str],
+) -> tuple[ReferenceInfo, ...]:
+    """Извлечь ограниченное число reference из атрибутов объекта."""
+    references: list[ReferenceInfo] = []
+    for name in obj.attrs:
+        try:
+            attribute_id = obj.attrs.get_id(name)
+            declared_kind = _reference_kind(attribute_id.dtype)
+            if declared_kind is None:
+                continue
+            shape = tuple(int(size) for size in attribute_id.shape)
+            value = obj.attrs[name]
+            values = np.asarray(value, dtype=object).reshape(-1)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            warnings.append(f"Cannot inspect references in attribute {name}: {exc}")
+            continue
+        count = min(int(values.size), _REFERENCE_PREVIEW_ITEMS)
+        for flat_index in range(count):
+            index = _flat_index(shape, flat_index)
+            references.append(
+                _describe_reference(
+                    h5_file,
+                    values[flat_index],
+                    source_kind=ReferenceSourceKind.ATTRIBUTE,
+                    source_name=str(name),
+                    source_index=index,
+                    declared_kind=declared_kind,
+                )
+            )
+        if values.size > _REFERENCE_PREVIEW_ITEMS:
+            warnings.append(
+                f"Attribute {name} reference preview is limited to {_REFERENCE_PREVIEW_ITEMS} items"
+            )
+    return tuple(references)
+
+
+def _dataset_references(
+    h5_file: h5py.File,
+    dataset: h5py.Dataset,
+    warnings: list[str],
+) -> tuple[ReferenceInfo, ...]:
+    """Прочитать не более заданного числа элементов reference-valued dataset."""
+    declared_kind = _reference_kind(dataset.dtype)
+    if declared_kind is None or dataset.shape is None:
+        return ()
+    shape = tuple(int(size) for size in dataset.shape)
+    total = int(dataset.size)
+    references: list[ReferenceInfo] = []
+    for flat_index in range(min(total, _REFERENCE_PREVIEW_ITEMS)):
+        index = _flat_index(shape, flat_index)
+        try:
+            value = dataset[()] if not shape else dataset[index]
+            reference = _describe_reference(
+                h5_file,
+                value,
+                source_kind=ReferenceSourceKind.DATASET,
+                source_name=str(dataset.name or ""),
+                source_index=index,
+                declared_kind=declared_kind,
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            reference = ReferenceInfo(
+                source_kind=ReferenceSourceKind.DATASET,
+                source_name=str(dataset.name or ""),
+                source_index=index,
+                reference_kind=declared_kind,
+                error=str(exc),
+            )
+        references.append(reference)
+    if total > _REFERENCE_PREVIEW_ITEMS:
+        warnings.append(f"Dataset reference preview is limited to {_REFERENCE_PREVIEW_ITEMS} items")
+    return tuple(references)
+
+
+def _reference_kind(dtype: np.dtype[Any]) -> ReferenceKind | None:
+    """Преобразовать reference dtype h5py в доменный тип."""
+    reference_class = h5py.check_dtype(ref=dtype)
+    if reference_class is h5py.RegionReference:
+        return ReferenceKind.REGION
+    if reference_class is not None:
+        return ReferenceKind.OBJECT
+    return None
+
+
+def _flat_index(shape: tuple[int, ...], flat_index: int) -> tuple[int, ...] | None:
+    """Преобразовать плоский индекс в координаты, сохранив scalar как None."""
+    if not shape:
+        return None
+    return tuple(int(value) for value in np.unravel_index(flat_index, shape))
+
+
+def _describe_reference(
+    h5_file: h5py.File,
+    value: Any,
+    *,
+    source_kind: ReferenceSourceKind,
+    source_name: str,
+    source_index: tuple[int, ...] | None,
+    declared_kind: ReferenceKind,
+) -> ReferenceInfo:
+    """Разрешить одну reference и сразу отделить данные от h5py handle."""
+    reference_kind = (
+        ReferenceKind.REGION if isinstance(value, h5py.RegionReference) else declared_kind
+    )
+    try:
+        if not value:
+            return ReferenceInfo(
+                source_kind=source_kind,
+                source_name=source_name,
+                source_index=source_index,
+                reference_kind=reference_kind,
+                error="Null reference",
+            )
+        target = h5_file[value]
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        return ReferenceInfo(
+            source_kind=source_kind,
+            source_name=source_name,
+            source_index=source_index,
+            reference_kind=reference_kind,
+            error=str(exc),
+        )
+
+    target_path = str(target.name) if target.name is not None else None
+    selection_type: str | None = None
+    selected_points: int | None = None
+    bounds: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    error: str | None = None
+    if reference_kind is ReferenceKind.REGION:
+        try:
+            space = h5py.h5r.get_region(value, h5_file.id)
+            selection_type, selected_points, bounds = _dataspace_details(space)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            error = str(exc)
+    return ReferenceInfo(
+        source_kind=source_kind,
+        source_name=source_name,
+        source_index=source_index,
+        reference_kind=reference_kind,
+        target_path=target_path,
+        target_kind=_object_kind(target),
+        object_token=_object_token(target),
+        selection_type=selection_type,
+        selected_points=selected_points,
+        bounds=bounds,
+        error=error,
+    )
+
+
+def _dimension_scales(
+    dataset: h5py.Dataset,
+    warnings: list[str],
+) -> tuple[DimensionScaleInfo, ...]:
+    """Собрать labels и пути шкал для каждой оси без чтения их значений."""
+    dimensions: list[DimensionScaleInfo] = []
+    for axis in range(dataset.ndim):
+        try:
+            dimension = dataset.dims[axis]
+            label = str(dimension.label or "")
+            scale_paths = tuple(
+                str(scale.name) for scale in dimension.values() if scale.name is not None
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            warnings.append(f"Cannot inspect dimension scale axis {axis}: {exc}")
+            label = ""
+            scale_paths = ()
+        dimensions.append(DimensionScaleInfo(axis, label, scale_paths))
+    return tuple(dimensions)
+
+
+def _virtual_mappings(
+    dataset: h5py.Dataset,
+    warnings: list[str],
+) -> tuple[VirtualMappingInfo, ...]:
+    """Преобразовать VDS mappings в ограниченные текстовые сводки."""
+    if not dataset.is_virtual:
+        return ()
+    try:
+        sources = dataset.virtual_sources()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        warnings.append(f"Cannot inspect virtual mappings: {exc}")
+        return ()
+    mappings = tuple(
+        VirtualMappingInfo(
+            source_file=_decode_hdf5_text(source.file_name),
+            source_dataset=_decode_hdf5_text(source.dset_name),
+            virtual_selection=_dataspace_summary(source.vspace),
+            source_selection=_dataspace_summary(source.src_space),
+        )
+        for source in sources[:_VIRTUAL_MAPPING_PREVIEW_ITEMS]
+    )
+    if len(sources) > _VIRTUAL_MAPPING_PREVIEW_ITEMS:
+        warnings.append(
+            f"Virtual mapping preview is limited to {_VIRTUAL_MAPPING_PREVIEW_ITEMS} items"
+        )
+    return mappings
+
+
+def _decode_hdf5_text(value: str | bytes) -> str:
+    """Декодировать имя из низкоуровневого HDF5 API с безопасной заменой."""
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
+
+
+def _dataspace_details(
+    space: h5py.h5s.SpaceID,
+) -> tuple[str, int | None, tuple[tuple[int, ...], tuple[int, ...]] | None]:
+    """Вернуть тип, число точек и границы HDF5 dataspace selection."""
+    selection_code = int(space.get_select_type())
+    selection_type = {
+        int(h5py.h5s.SEL_NONE): "none",
+        int(h5py.h5s.SEL_POINTS): "points",
+        int(h5py.h5s.SEL_HYPERSLABS): "hyperslabs",
+        int(h5py.h5s.SEL_ALL): "all",
+    }.get(selection_code, f"unknown ({selection_code})")
+    selected_points = int(space.get_select_npoints())
+    bounds: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    if selected_points > 0:
+        start, end = space.get_select_bounds()
+        bounds = (
+            tuple(int(value) for value in start),
+            tuple(int(value) for value in end),
+        )
+    return selection_type, selected_points, bounds
+
+
+def _dataspace_summary(space: h5py.h5s.SpaceID) -> str:
+    """Создать компактную сводку selection, включая специальный H5S_ALL."""
+    try:
+        selection_type, selected_points, bounds = _dataspace_details(space)
+    except (RuntimeError, ValueError):
+        return "all"
+    parts = [selection_type]
+    if selected_points is not None:
+        parts.append(f"points={selected_points}")
+    if bounds is not None:
+        parts.append(f"bounds={bounds[0]}…{bounds[1]}")
+    return "; ".join(parts)
 
 
 def _display_value(value: Any) -> str:

@@ -13,7 +13,7 @@
 | Compound dtype | ✅ | — | Безопасный read-only fallback |
 | Enum dtype | ✅ | ✅ | Допускается имя enum либо числовое значение |
 | Array/vlen sequence dtype | ◐ | — | Metadata и доступное значение |
-| Object/region references | ✅ | — | Metadata и представление значения; переход к цели ещё не реализован |
+| Object/region references | ✅ | — | Ограниченный список, region selection и переход к доступной цели |
 | Attributes | ✅ | ✅ | Scalar и JSON-совместимые массивы с неизменным shape/dtype |
 | Hard links и aliases | ✅ | ✅ | Identity, циклы, создание и точное undo alias |
 | Soft links | ✅ | ✅ | Создание, target, broken state и undo |
@@ -21,8 +21,8 @@
 | Committed datatype | ✅ | — | Metadata |
 | Chunking/layout/fill value | ✅ | ✅ | Настройка при создании dataset |
 | Filter pipeline | ✅ | ◐ | Создание с gzip/lzf, shuffle и Fletcher32 |
-| VDS mappings | ✅ | — | Metadata mappings |
-| Dimension scales | ✅ | — | Флаги и labels |
+| VDS mappings | ✅ | — | Исходный файл/dataset и обе selection для каждого mapping |
+| Dimension scales | ✅ | — | Labels и пути всех шкал по осям |
 | External raw storage | ✅ | — | Metadata |
 | Copy между файлами | ✅ | ✅ | Без раскрытия soft/external/reference targets; undoable |
 | Move между файлами | ✅ | ✅ | Парный undo/redo; сохранение двух файлов неатомарно |

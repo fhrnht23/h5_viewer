@@ -16,6 +16,8 @@ from h5viewer.domain.models import (
     LinkCreationOptions,
     LinkKind,
     ObjectKind,
+    ReferenceKind,
+    ReferenceSourceKind,
     default_dataset_slice,
 )
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
@@ -49,6 +51,55 @@ def test_details_include_storage_and_attributes(sample_hdf5: Path) -> None:
     assert properties["layout"] == "chunked"
     assert properties["compression"] == "gzip"
     assert attributes["unit"].value_text == "м/с"
+
+
+def test_details_resolve_object_and_region_references(sample_hdf5: Path) -> None:
+    repository = H5pyRepository(sample_hdf5)
+    group_details = repository.details("/data")
+    attributes = {reference.source_name: reference for reference in group_details.references}
+
+    assert attributes["object_ref"].source_kind is ReferenceSourceKind.ATTRIBUTE
+    assert attributes["object_ref"].reference_kind is ReferenceKind.OBJECT
+    assert attributes["object_ref"].target_path == "/data/scalar"
+    region = attributes["region_ref"]
+    assert region.reference_kind is ReferenceKind.REGION
+    assert region.target_path in {"/data/numeric", "/numeric_alias"}
+    assert region.object_token == repository.link("/data/numeric").object_token
+    assert region.selection_type == "hyperslabs"
+    assert region.selected_points == 6
+    assert region.bounds == ((0, 0, 0), (0, 1, 2))
+
+    dataset_details = repository.details("/data/object_refs")
+    assert dataset_details.references[0].target_path == "/data/scalar"
+    assert dataset_details.references[1].target_path in {"/data/numeric", "/numeric_alias"}
+    assert (
+        dataset_details.references[1].object_token == repository.link("/data/numeric").object_token
+    )
+    assert dataset_details.references[2].error == "Null reference"
+
+
+def test_details_include_dimension_scales_and_vds_mappings(sample_hdf5: Path) -> None:
+    repository = H5pyRepository(sample_hdf5)
+    numeric = repository.details("/data/numeric")
+    axis = numeric.dimension_scales[2]
+
+    assert axis.label == "x"
+    assert axis.scale_paths == ("/data/x",)
+
+    virtual = repository.details("/data/virtual_numeric")
+    assert len(virtual.virtual_mappings) == 2
+    assert virtual.virtual_mappings[0].source_file == "."
+    assert virtual.virtual_mappings[0].source_dataset == "/data/numeric"
+    assert virtual.virtual_mappings[0].virtual_selection.startswith("hyperslabs; points=60")
+    assert virtual.virtual_mappings[0].source_selection == "all"
+
+
+def test_resolves_one_link_by_path(sample_hdf5: Path) -> None:
+    repository = H5pyRepository(sample_hdf5)
+
+    assert repository.link("/data/numeric").object_kind is ObjectKind.DATASET
+    assert repository.link("/data/numeric").shape == (3, 4, 5)
+    assert repository.link("/").link_kind is LinkKind.ROOT
 
 
 def test_reads_only_requested_projection(sample_hdf5: Path) -> None:

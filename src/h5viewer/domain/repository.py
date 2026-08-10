@@ -29,6 +29,9 @@ class HdfRepository(Protocol):
     def root(self) -> LinkRef:
         """Вернуть ссылку на корневую группу."""
 
+    def link(self, path: str) -> LinkRef:
+        """Вернуть описание одной именованной ссылки по абсолютному пути."""
+
     def child_count(self, group_path: str) -> int:
         """Вернуть количество ссылок в группе."""
 

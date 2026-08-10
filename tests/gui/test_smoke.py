@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 
 from h5viewer.domain.models import DatasetExtent, LinkKind
 from h5viewer.presentation.qt.dialogs import (
@@ -73,6 +73,42 @@ def test_same_document_is_shared_by_both_panes(
     model.update_dataset_shape("/data/numeric", alias_link.object_token, (9, 8, 7))
     assert model.data(alias_index.siblingAtColumn(2)) == "(9, 8, 7)"
     assert model.data(numeric_index.siblingAtColumn(2)) == "(9, 8, 7)"
+
+
+def test_inspector_shows_rich_metadata_and_opens_reference(
+    qtbot: object, qapp: object, sample_hdf5: Path
+) -> None:
+    QSettings().clear()
+    language = LanguageManager(qapp)  # type: ignore[arg-type]
+    language.load()
+    theme = ThemeManager(qapp)  # type: ignore[arg-type]
+    window = MainWindow(language, theme)
+    qtbot.addWidget(window)  # type: ignore[attr-defined]
+    document = window._open_path(sample_hdf5)
+    assert document is not None
+
+    repository = document.repository()
+    window._show_object(document, repository.link("/data"))
+    assert window.inspector.references_table.rowCount() == 2
+    target_row = next(
+        row
+        for row in range(window.inspector.references_table.rowCount())
+        if window.inspector.references_table.item(row, 2).text() == "/data/scalar"
+    )
+    window.inspector.references_table.selectRow(target_row)
+    qtbot.mouseClick(  # type: ignore[attr-defined]
+        window.inspector.open_reference_button,
+        Qt.MouseButton.LeftButton,
+    )
+    assert window._active_link is not None
+    assert window._active_link.path == "/data/scalar"
+
+    window._show_object(document, repository.link("/data/numeric"))
+    assert window.inspector.dimension_scales_table.rowCount() == 3
+    assert window.inspector.dimension_scales_table.item(2, 2).text() == "/data/x"
+
+    window._show_object(document, repository.link("/data/virtual_numeric"))
+    assert window.inspector.virtual_mappings_table.rowCount() == 2
 
 
 def test_dataset_dialogs_build_typed_requests(qtbot: object, qapp: object) -> None:

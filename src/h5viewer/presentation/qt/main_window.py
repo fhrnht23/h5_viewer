@@ -229,6 +229,7 @@ class MainWindow(QMainWindow):
             pane.status_message.connect(self.statusBar().showMessage)
         self.inspector.content_changed.connect(self._content_changed)
         self.inspector.dataset_resized.connect(self._dataset_resized)
+        self.inspector.reference_activated.connect(self._open_reference_target)
         self.inspector.status_message.connect(self.statusBar().showMessage)
         self._language_manager.language_changed.connect(self._language_changed)
 
@@ -699,6 +700,16 @@ class MainWindow(QMainWindow):
         self.inspector.show_object(session, link)
         self._update_actions()
         self._update_title()
+
+    def _open_reference_target(self, session: DocumentSession, path: str) -> None:
+        """Открыть в инспекторе доступную цель object или region reference."""
+        try:
+            link = session.repository().link(path)
+        except H5ViewerError as exc:
+            self._show_error(str(exc))
+            return
+        self._show_object(session, link)
+        self.statusBar().showMessage(tr("MainWindow", "Reference target opened"), 5000)
 
     def _activate_session(self, session: DocumentSession) -> None:
         self._active_session = session

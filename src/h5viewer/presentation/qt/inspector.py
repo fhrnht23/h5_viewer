@@ -41,6 +41,8 @@ from h5viewer.domain.models import (
     LinkRef,
     ObjectDetails,
     ObjectKind,
+    ReferenceInfo,
+    ReferenceSourceKind,
     default_dataset_slice,
 )
 from h5viewer.presentation.qt.dialogs import ResizeDatasetDialog
@@ -55,6 +57,7 @@ class ObjectInspector(QTabWidget):
 
     content_changed = Signal(object)
     dataset_resized = Signal(object, str, object, object)
+    reference_activated = Signal(object, str)
     status_message = Signal(str)
 
     def __init__(
@@ -155,8 +158,33 @@ class ObjectInspector(QTabWidget):
             1, QHeaderView.ResizeMode.Stretch
         )
 
-        self.links_text = QTextEdit(self)
-        self.links_text.setReadOnly(True)
+        self.links_page = QWidget(self)
+        links_layout = QVBoxLayout(self.links_page)
+        self.link_summary = QTextEdit(self.links_page)
+        self.link_summary.setReadOnly(True)
+        self.link_summary.setMaximumHeight(112)
+        links_layout.addWidget(self.link_summary)
+
+        self.metadata_tabs = QTabWidget(self.links_page)
+        self.references_table = self._metadata_table(4, self.metadata_tabs)
+        self.dimension_scales_table = self._metadata_table(3, self.metadata_tabs)
+        self.virtual_mappings_table = self._metadata_table(4, self.metadata_tabs)
+        self.metadata_tabs.addTab(self.references_table, "")
+        self.metadata_tabs.addTab(self.dimension_scales_table, "")
+        self.metadata_tabs.addTab(self.virtual_mappings_table, "")
+        links_layout.addWidget(self.metadata_tabs, 1)
+        reference_buttons = QHBoxLayout()
+        self.open_reference_button = QPushButton(self.links_page)
+        self.open_reference_button.setEnabled(False)
+        self.open_reference_button.clicked.connect(self._navigate_reference)
+        self.references_table.itemSelectionChanged.connect(self._reference_selection_changed)
+        self.references_table.cellDoubleClicked.connect(
+            lambda _row, _column: self._navigate_reference()
+        )
+        reference_buttons.addWidget(self.open_reference_button)
+        reference_buttons.addStretch(1)
+        links_layout.addLayout(reference_buttons)
+
         self.preview_text = QTextEdit(self)
         self.preview_text.setReadOnly(True)
         self.raw_text = QTextEdit(self)
@@ -166,9 +194,20 @@ class ObjectInspector(QTabWidget):
         self.addTab(self.data_page, "")
         self.addTab(self.attributes_page, "")
         self.addTab(self.properties_table, "")
-        self.addTab(self.links_text, "")
+        self.addTab(self.links_page, "")
         self.addTab(self.preview_text, "")
         self.addTab(self.raw_text, "")
+
+    def _metadata_table(self, columns: int, parent: QWidget) -> QTableWidget:
+        """Создать единообразную read-only таблицу метаданных."""
+        table = QTableWidget(0, columns, parent)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().hide()
+        table.horizontalHeader().setStretchLastSection(True)
+        return table
 
     def retranslate_ui(self) -> None:
         """Повторно перевести статические подписи инспектора."""
@@ -203,6 +242,36 @@ class ObjectInspector(QTabWidget):
         self.properties_table.setHorizontalHeaderLabels(
             [tr("Inspector", "Property"), tr("Inspector", "Value")]
         )
+        self.metadata_tabs.setTabText(0, tr("Inspector", "References"))
+        self.metadata_tabs.setTabText(1, tr("Inspector", "Dimension scales"))
+        self.metadata_tabs.setTabText(2, tr("Inspector", "VDS mappings"))
+        self.references_table.setHorizontalHeaderLabels(
+            [
+                tr("Inspector", "Source"),
+                tr("Inspector", "Kind"),
+                tr("Inspector", "Target"),
+                tr("Inspector", "Details"),
+            ]
+        )
+        self.dimension_scales_table.setHorizontalHeaderLabels(
+            [
+                tr("Inspector", "Axis"),
+                tr("Inspector", "Label"),
+                tr("Inspector", "Attached scales"),
+            ]
+        )
+        self.virtual_mappings_table.setHorizontalHeaderLabels(
+            [
+                tr("Inspector", "Source file"),
+                tr("Inspector", "Source dataset"),
+                tr("Inspector", "Source selection"),
+                tr("Inspector", "Virtual selection"),
+            ]
+        )
+        self.open_reference_button.setText(tr("Inspector", "Go to target"))
+        if self._link is not None and self._details is not None:
+            self._populate_link_info(self._link, self._details)
+            self._populate_raw(self._details)
 
     def clear_inspector(self) -> None:
         """Очистить содержимое при закрытии последнего документа."""
@@ -213,7 +282,11 @@ class ObjectInspector(QTabWidget):
         self.dataset_model.clear()
         self.attributes_table.setRowCount(0)
         self.properties_table.setRowCount(0)
-        self.links_text.clear()
+        self.link_summary.clear()
+        self.references_table.setRowCount(0)
+        self.dimension_scales_table.setRowCount(0)
+        self.virtual_mappings_table.setRowCount(0)
+        self.open_reference_button.setEnabled(False)
         self.preview_text.setPlainText(tr("Inspector", "Select an object to inspect it"))
         self.raw_text.clear()
         self.data_message.setText(tr("Inspector", "Select a dataset"))
@@ -380,7 +453,119 @@ class ObjectInspector(QTabWidget):
             lines.append(f"{tr('Inspector', 'External file')}: {link.external_file}")
         if details.warnings:
             lines.extend(f"⚠ {warning}" for warning in details.warnings)
-        self.links_text.setPlainText("\n".join(lines))
+        self.link_summary.setPlainText("\n".join(lines))
+        self._populate_references(details.references)
+        self._populate_dimension_scales(details)
+        self._populate_virtual_mappings(details)
+
+    def _populate_references(self, references: tuple[ReferenceInfo, ...]) -> None:
+        """Заполнить таблицу разрешённых и недоступных HDF5 references."""
+        self.references_table.setRowCount(len(references))
+        for row, reference in enumerate(references):
+            source = self._reference_source_text(reference)
+            target = reference.target_path or "—"
+            details = self._reference_details_text(reference)
+            values = (
+                source,
+                tr("Inspector", reference.reference_kind.value),
+                target,
+                details,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.ItemDataRole.UserRole, reference)
+                self.references_table.setItem(row, column, item)
+        self.references_table.resizeColumnsToContents()
+        self.references_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch
+        )
+        self.open_reference_button.setEnabled(False)
+
+    def _reference_source_text(self, reference: ReferenceInfo) -> str:
+        """Локализовать источник reference и сохранить точные координаты."""
+        if reference.source_kind is ReferenceSourceKind.ATTRIBUTE:
+            source = f"{tr('Inspector', 'Attribute')}: {reference.source_name}"
+        else:
+            source = tr("Inspector", "Dataset element")
+        if reference.source_index is not None:
+            source += f" {reference.source_index}"
+        return source
+
+    def _reference_details_text(self, reference: ReferenceInfo) -> str:
+        """Собрать компактное описание region selection или ошибки."""
+        parts: list[str] = []
+        if reference.target_kind is not None:
+            parts.append(tr("Inspector", reference.target_kind.value))
+        if reference.selection_type is not None:
+            parts.append(f"{tr('Inspector', 'Selection')}: {reference.selection_type}")
+        if reference.selected_points is not None:
+            parts.append(f"{tr('Inspector', 'Points')}: {reference.selected_points}")
+        if reference.bounds is not None:
+            parts.append(f"{tr('Inspector', 'Bounds')}: {reference.bounds}")
+        if reference.error:
+            error = (
+                tr("Inspector", "Null reference")
+                if reference.error == "Null reference"
+                else reference.error
+            )
+            parts.append(f"{tr('Inspector', 'Error')}: {error}")
+        return " · ".join(parts) or "—"
+
+    def _populate_dimension_scales(self, details: ObjectDetails) -> None:
+        """Показать labels и все шкалы каждой оси dataset."""
+        scales = details.dimension_scales
+        self.dimension_scales_table.setRowCount(len(scales))
+        for row, dimension in enumerate(scales):
+            values = (
+                str(dimension.axis),
+                dimension.label or "—",
+                ", ".join(dimension.scale_paths) or "—",
+            )
+            for column, value in enumerate(values):
+                self.dimension_scales_table.setItem(row, column, QTableWidgetItem(value))
+        self.dimension_scales_table.resizeColumnsToContents()
+        self.dimension_scales_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _populate_virtual_mappings(self, details: ObjectDetails) -> None:
+        """Показать структурированные соответствия VDS без payload."""
+        mappings = details.virtual_mappings
+        self.virtual_mappings_table.setRowCount(len(mappings))
+        for row, mapping in enumerate(mappings):
+            values = (
+                mapping.source_file,
+                mapping.source_dataset,
+                mapping.source_selection,
+                mapping.virtual_selection,
+            )
+            for column, value in enumerate(values):
+                self.virtual_mappings_table.setItem(row, column, QTableWidgetItem(value))
+        self.virtual_mappings_table.resizeColumnsToContents()
+        self.virtual_mappings_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch
+        )
+
+    def _selected_reference(self) -> ReferenceInfo | None:
+        row = self.references_table.currentRow()
+        if row < 0:
+            return None
+        item = self.references_table.item(row, 0)
+        value = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        return value if isinstance(value, ReferenceInfo) else None
+
+    def _reference_selection_changed(self) -> None:
+        reference = self._selected_reference()
+        self.open_reference_button.setEnabled(
+            reference is not None and reference.target_path is not None
+        )
+
+    def _navigate_reference(self) -> None:
+        """Попросить главное окно открыть доступную цель reference."""
+        reference = self._selected_reference()
+        if self._session is None or reference is None or reference.target_path is None:
+            return
+        self.reference_activated.emit(self._session, reference.target_path)
 
     def _populate_raw(self, details: ObjectDetails) -> None:
         lines = [f'{details.kind.value.upper()} "{details.path}" {{']
@@ -394,6 +579,31 @@ class ObjectInspector(QTabWidget):
                     f"{attribute.shape} = {attribute.value_text}"
                 )
             lines.append("  }")
+        if details.references:
+            lines.append("  REFERENCES {")
+            for reference in details.references:
+                lines.append(
+                    f"    {reference.reference_kind.value} "
+                    f"{reference.source_name}{reference.source_index or ''} "
+                    f"-> {reference.target_path or reference.error or 'NULL'}"
+                )
+            lines.append("  }")
+        if details.dimension_scales:
+            lines.append("  DIMENSION_SCALES {")
+            for dimension in details.dimension_scales:
+                lines.append(
+                    f"    AXIS {dimension.axis} LABEL {dimension.label!r} "
+                    f"SCALES {dimension.scale_paths}"
+                )
+            lines.append("  }")
+        if details.virtual_mappings:
+            lines.append("  VIRTUAL_MAPPINGS {")
+            for mapping in details.virtual_mappings:
+                lines.append(
+                    f"    {mapping.source_file}:{mapping.source_dataset} "
+                    f"{mapping.source_selection} -> {mapping.virtual_selection}"
+                )
+            lines.append("  }")
         lines.append("}")
         self.raw_text.setPlainText("\n".join(lines))
 
@@ -401,6 +611,10 @@ class ObjectInspector(QTabWidget):
         self.dataset_model.clear()
         self.attributes_table.setRowCount(0)
         self.properties_table.setRowCount(0)
+        self.references_table.setRowCount(0)
+        self.dimension_scales_table.setRowCount(0)
+        self.virtual_mappings_table.setRowCount(0)
+        self.open_reference_button.setEnabled(False)
         message = error or link.error or tr("Inspector", "Broken link")
         link_lines = (
             link.path,
@@ -409,11 +623,11 @@ class ObjectInspector(QTabWidget):
             link.target_path or "",
             message,
         )
-        self.links_text.setPlainText("\n".join(link_lines))
+        self.link_summary.setPlainText("\n".join(link_lines))
         self.raw_text.setPlainText(message)
         self.preview_text.setPlainText(message)
         self.data_message.setText(message)
-        self.setCurrentWidget(self.links_text)
+        self.setCurrentWidget(self.links_page)
 
     def _selected_attribute(self) -> AttributeInfo | None:
         row = self.attributes_table.currentRow()

@@ -10,6 +10,8 @@ H5 Viewer — кроссплатформенное двухпанельное de
 - лениво обходить группы, datasets, hard/soft/external и broken links;
 - обнаруживать циклы hard links;
 - показывать атрибуты, свойства хранения и ограниченные двумерные срезы N-D datasets;
+- разрешать object/region references, показывать region selection и переходить к доступной цели;
+- показывать шкалы измерений и структурированные соответствия VDS без чтения payload;
 - редактировать поддерживаемые scalar values и атрибуты в безопасной рабочей копии;
 - создавать группы и datasets с настройкой dtype, shape, chunks, compression и fill value;
 - безопасно расширять chunked datasets в пределах maxshape;

@@ -83,4 +83,18 @@ def sample_hdf5(tmp_path: Path) -> Path:
         ref_target = data["scalar"]
         data.attrs["object_ref"] = ref_target.ref
         data.attrs["region_ref"] = numeric.regionref[0:1, 0:2, 0:3]
+
+        object_refs = data.create_dataset("object_refs", shape=(3,), dtype=h5py.ref_dtype)
+        object_refs[0] = ref_target.ref
+        object_refs[1] = numeric.ref
+        object_refs[2] = h5py.Reference()
+        region_refs = data.create_dataset("region_refs", shape=(2,), dtype=h5py.regionref_dtype)
+        region_refs[0] = numeric.regionref[0:1, 0:2, 0:3]
+        region_refs[1] = numeric.regionref[2:3, 1:4, 3:5]
+
+        virtual_layout = h5py.VirtualLayout(shape=(6, 4, 5), dtype=numeric.dtype)
+        virtual_source = h5py.VirtualSource(str(path), numeric.name, shape=numeric.shape)
+        virtual_layout[:3, :, :] = virtual_source
+        virtual_layout[3:, :, :] = virtual_source
+        data.create_virtual_dataset("virtual_numeric", virtual_layout)
     return path
