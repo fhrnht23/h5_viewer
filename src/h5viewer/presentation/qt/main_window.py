@@ -42,7 +42,7 @@ from h5viewer.presentation.qt.analysis_dialogs import (
 from h5viewer.presentation.qt.icons import interface_icon
 from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
-from h5viewer.presentation.qt.settings_dialog import AppearanceSettingsDialog
+from h5viewer.presentation.qt.settings_dialog import SettingsDialog
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager, tr
 
@@ -133,7 +133,9 @@ class MainWindow(QMainWindow):
 
     def _create_actions(self) -> None:
         self.new_action = QAction("", self)
-        self.new_action.setShortcut(QKeySequence.StandardKey.New)
+        self.new_action.setShortcuts(
+            [QKeySequence("Shift+F4"), QKeySequence(QKeySequence.StandardKey.New)]
+        )
         self.new_action.triggered.connect(self.create_file)
         self.open_action = QAction("", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -150,11 +152,17 @@ class MainWindow(QMainWindow):
         self.discard_action = QAction("", self)
         self.discard_action.triggered.connect(self.discard_active)
         self.exit_action = QAction("", self)
-        self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        self.exit_action.setShortcuts(
+            [QKeySequence("Alt+F4"), QKeySequence(QKeySequence.StandardKey.Quit)]
+        )
         self.exit_action.triggered.connect(self.close)
 
         self.enable_edit_action = QAction("", self)
+        self.enable_edit_action.setShortcut(QKeySequence("F4"))
         self.enable_edit_action.triggered.connect(self.enable_active_editing)
+        self.open_inspector_action = QAction("", self)
+        self.open_inspector_action.setShortcut(QKeySequence("F3"))
+        self.open_inspector_action.triggered.connect(self.open_active_inspector)
         self.undo_action = QAction("", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self.undo)
@@ -162,30 +170,57 @@ class MainWindow(QMainWindow):
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self.redo)
         self.refresh_action = QAction("", self)
-        self.refresh_action.setShortcut(QKeySequence("Ctrl+R"))
+        self.refresh_action.setShortcuts([QKeySequence("F2"), QKeySequence("Ctrl+R")])
         self.refresh_action.triggered.connect(self.refresh_active)
+
+        # Клавиши F5 и F6 повторяют Total Commander: источник определяется
+        # активной панелью, а назначением всегда становится соседняя панель.
+        self.copy_active_action = QAction("", self)
+        self.copy_active_action.setShortcut(QKeySequence("F5"))
+        self.copy_active_action.triggered.connect(self.copy_active_to_other)
+        self.move_active_action = QAction("", self)
+        self.move_active_action.setShortcut(QKeySequence("F6"))
+        self.move_active_action.triggered.connect(self.move_active_to_other)
+        self.create_group_action = QAction("", self)
+        self.create_group_action.setShortcut(QKeySequence("F7"))
+        self.create_group_action.triggered.connect(self.create_group_in_active_pane)
+        self.create_group_other_action = QAction("", self)
+        self.create_group_other_action.setShortcut(QKeySequence("Shift+F7"))
+        self.create_group_other_action.triggered.connect(self.create_group_in_other_pane)
+        self.rename_action = QAction("", self)
+        self.rename_action.setShortcut(QKeySequence("Shift+F6"))
+        self.rename_action.triggered.connect(self.rename_active_link)
+        self.delete_action = QAction("", self)
+        self.delete_action.setShortcuts([QKeySequence("F8"), QKeySequence("Delete")])
+        self.delete_action.triggered.connect(self.delete_active_link)
+        self.switch_pane_action = QAction("", self)
+        self.switch_pane_action.setShortcuts([QKeySequence("Tab"), QKeySequence("Ctrl+I")])
+        self.switch_pane_action.triggered.connect(self.switch_active_pane)
+        self.toggle_navigation_action = QAction("", self)
+        self.toggle_navigation_action.setShortcut(QKeySequence("Ctrl+F8"))
+        self.toggle_navigation_action.triggered.connect(self.toggle_active_navigation_mode)
+
+        # Направленные команды остаются отдельными кнопками для работы мышью.
         self.copy_right_action = QAction("", self)
-        self.copy_right_action.setShortcut("F5")
         self.copy_right_action.triggered.connect(
             lambda: self.copy_between_panes(self.left_pane, self.right_pane)
         )
         self.copy_left_action = QAction("", self)
-        self.copy_left_action.setShortcut("Shift+F5")
         self.copy_left_action.triggered.connect(
             lambda: self.copy_between_panes(self.right_pane, self.left_pane)
         )
         self.move_right_action = QAction("", self)
-        self.move_right_action.setShortcut("F6")
         self.move_right_action.triggered.connect(
             lambda: self.move_between_panes(self.left_pane, self.right_pane)
         )
         self.move_left_action = QAction("", self)
-        self.move_left_action.setShortcut("Shift+F6")
         self.move_left_action.triggered.connect(
             lambda: self.move_between_panes(self.right_pane, self.left_pane)
         )
         self.search_metadata_action = QAction("", self)
-        self.search_metadata_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.search_metadata_action.setShortcuts(
+            [QKeySequence("Alt+F7"), QKeySequence(QKeySequence.StandardKey.Find)]
+        )
         self.search_metadata_action.triggered.connect(self.search_metadata)
         self.compare_panes_action = QAction("", self)
         self.compare_panes_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
@@ -194,9 +229,9 @@ class MainWindow(QMainWindow):
         self.dark_theme_action = QAction("", self, checkable=True)
         self.dark_theme_action.setChecked(self._theme_manager.dark)
         self.dark_theme_action.toggled.connect(self._theme_manager.apply)
-        self.appearance_settings_action = QAction("", self)
-        self.appearance_settings_action.setShortcut(QKeySequence("Ctrl+,"))
-        self.appearance_settings_action.triggered.connect(self.show_appearance_settings)
+        self.settings_action = QAction("", self)
+        self.settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        self.settings_action.triggered.connect(self.show_settings)
         self.russian_action = QAction("", self, checkable=True)
         self.russian_action.setData("ru")
         self.english_action = QAction("", self, checkable=True)
@@ -223,7 +258,25 @@ class MainWindow(QMainWindow):
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.exit_action)
         self.edit_menu = self.menuBar().addMenu("")
-        self.edit_menu.addActions([self.enable_edit_action, self.undo_action, self.redo_action])
+        self.edit_menu.addActions(
+            [
+                self.enable_edit_action,
+                self.undo_action,
+                self.redo_action,
+                self.open_inspector_action,
+            ]
+        )
+        self.edit_menu.addSeparator()
+        self.edit_menu.addActions(
+            [
+                self.copy_active_action,
+                self.move_active_action,
+                self.create_group_action,
+                self.create_group_other_action,
+                self.rename_action,
+                self.delete_action,
+            ]
+        )
         self.edit_menu.addSeparator()
         self.edit_menu.addActions(
             [
@@ -234,9 +287,16 @@ class MainWindow(QMainWindow):
             ]
         )
         self.view_menu = self.menuBar().addMenu("")
-        self.view_menu.addActions([self.refresh_action, self.dark_theme_action])
+        self.view_menu.addActions(
+            [
+                self.switch_pane_action,
+                self.toggle_navigation_action,
+                self.refresh_action,
+                self.dark_theme_action,
+            ]
+        )
         self.view_menu.addSeparator()
-        self.view_menu.addAction(self.appearance_settings_action)
+        self.view_menu.addAction(self.settings_action)
         self.tools_menu = self.menuBar().addMenu("")
         self.tools_menu.addActions([self.search_metadata_action, self.compare_panes_action])
         self.language_menu = self.menuBar().addMenu("")
@@ -310,11 +370,17 @@ class MainWindow(QMainWindow):
     def _set_active_pane(self, active: BrowserPane) -> None:
         """Подсветить панель, в которой пользователь сейчас работает."""
         self._active_pane = active
+        if active.session is not None:
+            self._active_session = active.session
+            self._active_link = active.current_link()
         for pane in (self.left_pane, self.right_pane):
             pane.setProperty("activePane", pane is active)
             pane.style().unpolish(pane)
             pane.style().polish(pane)
             pane.update()
+        if hasattr(self, "open_inspector_action"):
+            self._update_actions()
+            self._update_title()
 
     def _theme_changed(self, _dark: bool) -> None:
         """Перерисовать зависящие от палитры векторные значки."""
@@ -340,7 +406,7 @@ class MainWindow(QMainWindow):
             (self.copy_left_action, "copy_left", False),
             (self.move_right_action, "move_right", False),
             (self.move_left_action, "move_left", False),
-            (self.appearance_settings_action, "settings", False),
+            (self.settings_action, "settings", False),
         )
         for action, name, accent in icons:
             action.setIcon(interface_icon(name, accent=accent))
@@ -362,9 +428,18 @@ class MainWindow(QMainWindow):
             (self.discard_action, "Discard changes"),
             (self.exit_action, "Exit"),
             (self.enable_edit_action, "Enable safe editing"),
+            (self.open_inspector_action, "View object"),
             (self.undo_action, "Undo"),
             (self.redo_action, "Redo"),
             (self.refresh_action, "Refresh"),
+            (self.copy_active_action, "Copy to other pane"),
+            (self.move_active_action, "Move to other pane"),
+            (self.create_group_action, "Create group in active pane"),
+            (self.create_group_other_action, "Create group in other pane"),
+            (self.rename_action, "Rename selected object"),
+            (self.delete_action, "Delete selected object"),
+            (self.switch_pane_action, "Switch active pane"),
+            (self.toggle_navigation_action, "Tree / folder view"),
             (self.copy_right_action, "Copy →"),
             (self.copy_left_action, "← Copy"),
             (self.move_right_action, "Move →"),
@@ -372,7 +447,7 @@ class MainWindow(QMainWindow):
             (self.search_metadata_action, "Search metadata…"),
             (self.compare_panes_action, "Compare panes…"),
             (self.dark_theme_action, "Dark theme"),
-            (self.appearance_settings_action, "Appearance settings…"),
+            (self.settings_action, "Settings…"),
             (self.russian_action, "Russian"),
             (self.english_action, "English"),
             (self.about_action, "About"),
@@ -390,10 +465,10 @@ class MainWindow(QMainWindow):
             (self.undo_action, "Undo"),
             (self.redo_action, "Redo"),
             (self.refresh_action, "Refresh"),
-            (self.copy_right_action, "F5 →"),
-            (self.copy_left_action, "← Shift+F5"),
-            (self.move_right_action, "F6 →"),
-            (self.move_left_action, "← Shift+F6"),
+            (self.copy_right_action, "Copy →"),
+            (self.copy_left_action, "← Copy"),
+            (self.move_right_action, "Move →"),
+            (self.move_left_action, "← Move"),
         )
         for action, source in toolbar_texts:
             action.setIconText(tr("Toolbar", source))
@@ -706,6 +781,62 @@ class MainWindow(QMainWindow):
             return
         self._refresh_session(self._active_session)
 
+    def _active_and_other_panes(self) -> tuple[BrowserPane, BrowserPane]:
+        """Вернуть активную и соседнюю панели в порядке источник—назначение."""
+        active = self._active_pane or self.left_pane
+        other = self.right_pane if active is self.left_pane else self.left_pane
+        return active, other
+
+    def open_active_inspector(self) -> None:
+        """Открыть выбранный объект активной панели клавишей F3."""
+        active, _other = self._active_and_other_panes()
+        active.open_current_link()
+
+    def copy_active_to_other(self) -> None:
+        """Скопировать объект из активной панели в соседнюю клавишей F5."""
+        source, destination = self._active_and_other_panes()
+        self.copy_between_panes(source, destination)
+
+    def move_active_to_other(self) -> None:
+        """Переместить объект из активной панели в соседнюю клавишей F6."""
+        source, destination = self._active_and_other_panes()
+        self.move_between_panes(source, destination)
+
+    def create_group_in_active_pane(self) -> None:
+        """Создать группу в активной панели клавишей F7."""
+        active, _other = self._active_and_other_panes()
+        active.create_group()
+
+    def create_group_in_other_pane(self) -> None:
+        """Создать группу в соседней панели клавишами Shift+F7."""
+        _active, other = self._active_and_other_panes()
+        other.create_group()
+
+    def rename_active_link(self) -> None:
+        """Переименовать выбранную ссылку активной панели."""
+        active, _other = self._active_and_other_panes()
+        active.rename_current_link()
+
+    def delete_active_link(self) -> None:
+        """Удалить выбранную ссылку активной панели."""
+        active, _other = self._active_and_other_panes()
+        active.delete_current_link()
+
+    def switch_active_pane(self) -> None:
+        """Передать фокус соседней панели как Tab в Total Commander."""
+        _active, target = self._active_and_other_panes()
+        target.tree.setFocus()
+        self._set_active_pane(target)
+        selected = target.current_link()
+        if target.session is not None and selected is not None:
+            self._show_object(target.session, selected)
+
+    def toggle_active_navigation_mode(self) -> None:
+        """Переключить дерево и папочный режим в активной панели."""
+        active, _other = self._active_and_other_panes()
+        active.toggle_navigation_mode()
+        self._update_actions()
+
     def copy_between_panes(self, source_pane: BrowserPane, destination_pane: BrowserPane) -> None:
         """Скопировать выбранный объект между панелями как отдельную undoable-команду."""
         source_session = source_pane.session
@@ -903,10 +1034,60 @@ class MainWindow(QMainWindow):
             tr("MainWindow", "Cross-platform two-pane HDF5 viewer and safe editor."),
         )
 
-    def show_appearance_settings(self) -> None:
-        """Открыть настройки с живым предпросмотром оформления."""
-        dialog = AppearanceSettingsDialog(self._theme_manager, self)
+    def show_settings(self) -> None:
+        """Открыть общие настройки и справочник фактических сочетаний клавиш."""
+        dialog = SettingsDialog(self._theme_manager, self.shortcut_descriptions(), self)
         dialog.exec()
+
+    def shortcut_descriptions(self) -> list[tuple[str, str]]:
+        """Собрать локализованный список назначений прямо из QAction."""
+        actions = (
+            self.open_inspector_action,
+            self.enable_edit_action,
+            self.new_action,
+            self.copy_active_action,
+            self.move_active_action,
+            self.create_group_action,
+            self.create_group_other_action,
+            self.rename_action,
+            self.delete_action,
+            self.switch_pane_action,
+            self.toggle_navigation_action,
+            self.refresh_action,
+            self.search_metadata_action,
+            self.open_action,
+            self.close_action,
+            self.save_action,
+            self.save_as_action,
+            self.undo_action,
+            self.redo_action,
+            self.compare_panes_action,
+            self.settings_action,
+            self.exit_action,
+        )
+        format_ = QKeySequence.SequenceFormat.NativeText
+        rows = [
+            (
+                action.text().replace("&", ""),
+                ", ".join(sequence.toString(format_) for sequence in action.shortcuts()),
+            )
+            for action in actions
+            if action.shortcuts()
+        ]
+        rows.extend(
+            [
+                (tr("Shortcuts", "Enter group or open inspector"), "Enter"),
+                (tr("Pane", "Go to root group"), QKeySequence("Ctrl+\\").toString(format_)),
+                (
+                    tr("Pane", "Go to parent group"),
+                    ", ".join(
+                        QKeySequence(value).toString(format_)
+                        for value in ("Ctrl+PgUp", "Backspace")
+                    ),
+                ),
+            ]
+        )
+        return rows
 
     def _show_object(self, session: DocumentSession, link: LinkRef) -> None:
         self._active_session = session
@@ -1041,6 +1222,10 @@ class MainWindow(QMainWindow):
         session = self._active_session
         has_document = session is not None
         editing = bool(session and session.is_editing)
+        active, other = self._active_and_other_panes()
+        active_link = active.current_link()
+        transferable = active_link is not None and active_link.path != "/"
+        editable_link = transferable and active.session is not None
         self.close_action.setEnabled(has_document)
         self.save_action.setEnabled(editing)
         self.save_as_action.setEnabled(has_document)
@@ -1051,11 +1236,22 @@ class MainWindow(QMainWindow):
         self.compare_panes_action.setEnabled(
             self.left_pane.session is not None and self.right_pane.session is not None
         )
-        can_copy = bool(self.left_pane.current_link() or self.right_pane.current_link())
-        self.copy_right_action.setEnabled(has_document and can_copy)
-        self.copy_left_action.setEnabled(has_document and can_copy)
-        self.move_right_action.setEnabled(has_document and can_copy)
-        self.move_left_action.setEnabled(has_document and can_copy)
+        self.open_inspector_action.setEnabled(active_link is not None)
+        self.copy_active_action.setEnabled(transferable and other.session is not None)
+        self.move_active_action.setEnabled(transferable and other.session is not None)
+        self.create_group_action.setEnabled(active.session is not None)
+        self.create_group_other_action.setEnabled(other.session is not None)
+        self.rename_action.setEnabled(editable_link)
+        self.delete_action.setEnabled(editable_link)
+        self.toggle_navigation_action.setEnabled(active.session is not None)
+        left_link = self.left_pane.current_link()
+        right_link = self.right_pane.current_link()
+        left_transferable = left_link is not None and left_link.path != "/"
+        right_transferable = right_link is not None and right_link.path != "/"
+        self.copy_right_action.setEnabled(left_transferable and self.right_pane.session is not None)
+        self.copy_left_action.setEnabled(right_transferable and self.left_pane.session is not None)
+        self.move_right_action.setEnabled(left_transferable and self.right_pane.session is not None)
+        self.move_left_action.setEnabled(right_transferable and self.left_pane.session is not None)
         self.undo_action.setEnabled(bool(session and session.commands.can_undo))
         self.redo_action.setEnabled(bool(session and session.commands.can_redo))
 

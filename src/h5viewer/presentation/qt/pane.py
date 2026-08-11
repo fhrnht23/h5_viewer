@@ -44,8 +44,21 @@ class ObjectTreeView(QTreeView):
     """Представление структуры, резервирующее Enter для активации объекта."""
 
     open_requested = Signal()
+    parent_requested = Signal()
+    root_requested = Signal()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        modifiers = event.modifiers()
+        if event.key() == Qt.Key.Key_Backslash and modifiers == Qt.KeyboardModifier.ControlModifier:
+            self.root_requested.emit()
+            event.accept()
+            return
+        if (
+            event.key() == Qt.Key.Key_PageUp and modifiers == Qt.KeyboardModifier.ControlModifier
+        ) or (event.key() == Qt.Key.Key_Backspace and modifiers == Qt.KeyboardModifier.NoModifier):
+            self.parent_requested.emit()
+            event.accept()
+            return
         if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
             self.open_requested.emit()
             event.accept()
@@ -174,6 +187,8 @@ class BrowserPane(QWidget):
         self.tree.clicked.connect(self._tree_clicked)
         self.tree.doubleClicked.connect(self._tree_double_clicked)
         self.tree.open_requested.connect(self._activate_current_link)
+        self.tree.parent_requested.connect(self._go_up)
+        self.tree.root_requested.connect(self._select_root)
         self.tree.setModel(self._proxy)
         layout.addWidget(self.tree, 1)
 
@@ -282,6 +297,27 @@ class BrowserPane(QWidget):
         value = self._proxy.sourceModel().data(source, HdfTreeModel.LinkRole)
         return value if isinstance(value, LinkRef) else None
 
+    def open_current_link(self) -> None:
+        """Открыть выбранный объект действием главного окна."""
+        self._open_current_link()
+
+    def create_group(self) -> None:
+        """Создать группу в выбранной или текущей группе панели."""
+        self._create_group(self.current_link())
+
+    def rename_current_link(self) -> None:
+        """Переименовать выбранную ссылку панели."""
+        self._rename_link(self.current_link())
+
+    def delete_current_link(self) -> None:
+        """Удалить выбранную ссылку панели после подтверждения."""
+        self._delete_link(self.current_link())
+
+    def toggle_navigation_mode(self) -> None:
+        """Переключить дерево и просмотр содержимого одной группы."""
+        mode = "folders" if self._navigation_mode == "tree" else "tree"
+        self.set_navigation_mode(mode)
+
     def update_dataset_shape(
         self,
         session: DocumentSession,
@@ -380,6 +416,11 @@ class BrowserPane(QWidget):
                 return
             self._select_folder_group()
             return
+        if self._model is not None:
+            root_index = self._proxy.mapFromSource(self._model.index(0, 0))
+            if root_index.isValid():
+                self.tree.setCurrentIndex(root_index)
+                self.tree.scrollTo(root_index)
         self.path_edit.setText("/")
         self.up_button.setEnabled(False)
         try:
@@ -405,14 +446,26 @@ class BrowserPane(QWidget):
         self.object_selected.emit(self._session, link)
 
     def _go_up(self) -> None:
-        """Перейти в родительскую группу в режиме папок."""
-        if self._navigation_mode != "folders" or self._folder_model is None:
+        """Перейти к родителю текущей папки или выбранного узла дерева."""
+        if self._navigation_mode == "folders":
+            if self._folder_model is None:
+                return
+            current = self._folder_model.group_path
+            if current == "/":
+                return
+            parent_path, _name = split_hdf5_path(current)
+            self._navigate_to_group(parent_path)
             return
-        current = self._folder_model.group_path
-        if current == "/":
+        current_index = self.tree.currentIndex().siblingAtColumn(0)
+        if not current_index.isValid():
+            self._select_root()
             return
-        parent_path, _name = split_hdf5_path(current)
-        self._navigate_to_group(parent_path)
+        parent = current_index.parent()
+        if not parent.isValid():
+            return
+        self.tree.setCurrentIndex(parent)
+        self.tree.scrollTo(parent)
+        self._tree_clicked(parent)
 
     def _navigate_to_group(self, path: str) -> None:
         """Загрузить непосредственное содержимое указанной группы."""

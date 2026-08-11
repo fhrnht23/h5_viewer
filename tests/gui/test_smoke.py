@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QAction, QKeySequence
 
 from h5viewer.domain.models import DatasetExtent, LinkKind
 from h5viewer.plugins import LocalizedText
@@ -18,7 +19,7 @@ from h5viewer.presentation.qt.dialogs import (
     ResizeDatasetDialog,
 )
 from h5viewer.presentation.qt.main_window import MainWindow
-from h5viewer.presentation.qt.settings_dialog import AppearanceSettingsDialog
+from h5viewer.presentation.qt.settings_dialog import SettingsDialog
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager
 
@@ -33,7 +34,7 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
 
     assert language.language == "ru"
     assert window.open_action.text() == "Открыть…"
-    assert window.appearance_settings_action.text() == "Настройки оформления…"
+    assert window.settings_action.text() == "Настройки…"
     assert window.left_pane.folder_mode_button.toolTip() == "Папки"
     invoked: list[bool] = []
     registration = window.add_tools_action(
@@ -55,13 +56,20 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
     language.set_language("ru")
 
 
-def test_appearance_settings_preview_and_restore(qtbot: object, qapp: object) -> None:
+def test_settings_show_shortcuts_and_restore_appearance(qtbot: object, qapp: object) -> None:
     QSettings().clear()
     theme = ThemeManager(qapp)  # type: ignore[arg-type]
     theme.apply(False)
-    dialog = AppearanceSettingsDialog(theme)
+    shortcuts = [("Просмотреть объект", "F3"), ("Копировать", "F5")]
+    dialog = SettingsDialog(theme, shortcuts)
     qtbot.addWidget(dialog)  # type: ignore[attr-defined]
 
+    assert dialog.tabs.count() == 2
+    assert dialog.tabs.tabText(0) == "Оформление"
+    assert dialog.tabs.tabText(1) == "Горячие клавиши"
+    assert dialog.shortcuts_table.rowCount() == 2
+    assert dialog.shortcuts_table.item(0, 0).text() == "Просмотреть объект"
+    assert dialog.shortcuts_table.item(0, 1).text() == "F3"
     assert theme.style_name == "H5 Modern"
     assert "Fusion" in theme.available_styles()
     assert dialog.progress_preview.value() == 68
@@ -73,6 +81,44 @@ def test_appearance_settings_preview_and_restore(qtbot: object, qapp: object) ->
 
     dialog.reject()
     assert theme.style_name == "H5 Modern"
+
+
+def test_total_commander_shortcuts_are_assigned(qtbot: object, qapp: object) -> None:
+    """Проверить точные назначения совместимых клавиш Total Commander."""
+    QSettings().clear()
+    language = LanguageManager(qapp)  # type: ignore[arg-type]
+    language.load()
+    theme = ThemeManager(qapp)  # type: ignore[arg-type]
+    window = MainWindow(language, theme)
+    qtbot.addWidget(window)  # type: ignore[attr-defined]
+
+    def has_shortcut(action: QAction, value: str) -> bool:
+        return QKeySequence(value) in action.shortcuts()
+
+    assert has_shortcut(window.open_inspector_action, "F3")
+    assert has_shortcut(window.enable_edit_action, "F4")
+    assert has_shortcut(window.new_action, "Shift+F4")
+    assert has_shortcut(window.copy_active_action, "F5")
+    assert has_shortcut(window.move_active_action, "F6")
+    assert has_shortcut(window.rename_action, "Shift+F6")
+    assert has_shortcut(window.create_group_action, "F7")
+    assert has_shortcut(window.create_group_other_action, "Shift+F7")
+    assert has_shortcut(window.delete_action, "F8")
+    assert has_shortcut(window.delete_action, "Delete")
+    assert has_shortcut(window.switch_pane_action, "Tab")
+    assert has_shortcut(window.switch_pane_action, "Ctrl+I")
+    assert has_shortcut(window.toggle_navigation_action, "Ctrl+F8")
+    assert has_shortcut(window.refresh_action, "F2")
+    assert has_shortcut(window.refresh_action, "Ctrl+R")
+    assert has_shortcut(window.search_metadata_action, "Alt+F7")
+    assert not window.copy_right_action.shortcuts()
+    assert not window.copy_left_action.shortcuts()
+    assert not window.move_right_action.shortcuts()
+    assert not window.move_left_action.shortcuts()
+
+    rows = window.shortcut_descriptions()
+    assert ("Просмотреть объект", "F3") in rows
+    assert any(action == "Войти в группу или открыть инспектор" for action, _keys in rows)
 
 
 def test_same_document_is_shared_by_both_panes(
@@ -162,6 +208,9 @@ def test_enter_opens_separate_inspector_and_panels_use_full_window(
     )
     assert window.left_pane.property("activePane") is False
     assert window.right_pane.property("activePane") is True
+    window.switch_pane_action.trigger()
+    assert window.left_pane.property("activePane") is True
+    assert window.right_pane.property("activePane") is False
 
 
 def test_folder_navigation_shows_only_current_group(
@@ -215,7 +264,35 @@ def test_folder_navigation_shows_only_current_group(
     assert window._active_link is not None
     assert window._active_link.path == "/data/numeric"
 
-    qtbot.mouseClick(pane.up_button, Qt.MouseButton.LeftButton)  # type: ignore[attr-defined]
+    qtbot.keyClick(  # type: ignore[attr-defined]
+        pane.tree,
+        Qt.Key.Key_PageUp,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+    assert pane.path_edit.text() == "/"
+    data_index = next(
+        pane._proxy.index(row, 0)
+        for row in range(pane._proxy.rowCount())
+        if pane._proxy.data(pane._proxy.index(row, 0)) == "data"
+    )
+    pane.tree.setCurrentIndex(data_index)
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+    assert pane.path_edit.text() == "/data"
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Backspace)  # type: ignore[attr-defined]
+    assert pane.path_edit.text() == "/"
+    data_index = next(
+        pane._proxy.index(row, 0)
+        for row in range(pane._proxy.rowCount())
+        if pane._proxy.data(pane._proxy.index(row, 0)) == "data"
+    )
+    pane.tree.setCurrentIndex(data_index)
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+    assert pane.path_edit.text() == "/data"
+    qtbot.keyClick(  # type: ignore[attr-defined]
+        pane.tree,
+        Qt.Key.Key_Backslash,
+        Qt.KeyboardModifier.ControlModifier,
+    )
     assert pane.path_edit.text() == "/"
     pane.set_navigation_mode("tree")
     assert pane.tree_mode_button.isChecked()
