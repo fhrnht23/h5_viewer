@@ -18,6 +18,7 @@ from h5viewer.presentation.qt.dialogs import (
     ResizeDatasetDialog,
 )
 from h5viewer.presentation.qt.main_window import MainWindow
+from h5viewer.presentation.qt.settings_dialog import AppearanceSettingsDialog
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager
 
@@ -32,6 +33,7 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
 
     assert language.language == "ru"
     assert window.open_action.text() == "Открыть…"
+    assert window.appearance_settings_action.text() == "Настройки оформления…"
     invoked: list[bool] = []
     registration = window.add_tools_action(
         "org.example.test",
@@ -49,6 +51,26 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
     registration.remove()
     assert not window._plugin_actions
     language.set_language("ru")
+
+
+def test_appearance_settings_preview_and_restore(qtbot: object, qapp: object) -> None:
+    QSettings().clear()
+    theme = ThemeManager(qapp)  # type: ignore[arg-type]
+    theme.apply(False)
+    dialog = AppearanceSettingsDialog(theme)
+    qtbot.addWidget(dialog)  # type: ignore[attr-defined]
+
+    assert theme.style_name == "H5 Modern"
+    assert "Fusion" in theme.available_styles()
+    assert dialog.progress_preview.value() == 68
+    assert "QProgressBar::chunk" in qapp.styleSheet()  # type: ignore[attr-defined]
+
+    fusion_index = dialog.style_combo.findText("Fusion")
+    dialog.style_combo.setCurrentIndex(fusion_index)
+    assert theme.style_name == "Fusion"
+
+    dialog.reject()
+    assert theme.style_name == "H5 Modern"
 
 
 def test_same_document_is_shared_by_both_panes(

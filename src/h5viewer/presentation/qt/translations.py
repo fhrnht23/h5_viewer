@@ -49,6 +49,20 @@ _RU: dict[str, str] = {
     "Move →": "Переместить →",
     "← Move": "← Переместить",
     "Dark theme": "Тёмная тема",
+    "Appearance settings…": "Настройки оформления…",
+    "Appearance settings": "Настройки оформления",
+    "Choose a color scheme and a Qt widget style. Changes are applied immediately.": (
+        "Выберите цветовую схему и стиль элементов Qt. Изменения применяются сразу."
+    ),
+    "Color scheme": "Цветовая схема",
+    "Light": "Светлая",
+    "Dark": "Тёмная",
+    "Qt widget style": "Стиль элементов Qt",
+    "Progress preview": "Предпросмотр индикатора",
+    "Processing HDF5 objects…": "Обработка объектов HDF5…",
+    "Cancel restores the previous appearance.": (
+        "Кнопка «Отмена» вернёт предыдущее оформление."
+    ),
     "Russian": "Русский",
     "English": "Английский",
     "About": "О программе",

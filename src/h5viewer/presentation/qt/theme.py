@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 from PySide6.QtCore import QObject, QSettings, Signal
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import (
+    QApplication,
+    QProxyStyle,
+    QStyle,
+    QStyleFactory,
+    QStyleOption,
+    QWidget,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +75,37 @@ _DARK = _ThemeColors(
 )
 
 
+class H5ModernStyle(QProxyStyle):
+    """Современные размеры элементов поверх стабильного стиля Fusion."""
+
+    NAME = "H5 Modern"
+    _METRICS: ClassVar[dict[QStyle.PixelMetric, int]] = {
+        QStyle.PixelMetric.PM_DefaultFrameWidth: 1,
+        QStyle.PixelMetric.PM_ButtonMargin: 6,
+        QStyle.PixelMetric.PM_ScrollBarExtent: 12,
+        QStyle.PixelMetric.PM_SmallIconSize: 18,
+        QStyle.PixelMetric.PM_ToolBarIconSize: 20,
+        QStyle.PixelMetric.PM_ProgressBarChunkWidth: 12,
+        QStyle.PixelMetric.PM_LayoutHorizontalSpacing: 8,
+        QStyle.PixelMetric.PM_LayoutVerticalSpacing: 8,
+    }
+
+    def __init__(self) -> None:
+        super().__init__(QStyleFactory.create("Fusion"))
+        self.setObjectName("h5-modern")
+
+    def pixelMetric(  # noqa: N802
+        self,
+        metric: QStyle.PixelMetric,
+        option: QStyleOption | None = None,
+        widget: QWidget | None = None,
+    ) -> int:
+        """Вернуть согласованные размеры для часто используемых контролов."""
+        if metric in self._METRICS:
+            return self._METRICS[metric]
+        return super().pixelMetric(metric, option, widget)
+
+
 class ThemeManager(QObject):
     """Применяет целостную тему и сообщает интерфейсу о её смене."""
 
@@ -77,22 +116,64 @@ class ThemeManager(QObject):
         self._application = application
         self._settings = QSettings()
         self._dark = bool(self._settings.value("ui/dark_theme", False, type=bool))
+        requested_style = str(
+            self._settings.value("ui/widget_style", H5ModernStyle.NAME)
+        )
+        self._style_name = self._resolve_style_name(requested_style)
 
     @property
     def dark(self) -> bool:
         return self._dark
 
-    def apply(self, dark: bool | None = None) -> None:
+    @property
+    def style_name(self) -> str:
+        """Вернуть имя выбранного базового стиля Qt."""
+        return self._style_name
+
+    @staticmethod
+    def available_styles() -> tuple[str, ...]:
+        """Вернуть собственный стиль первым, затем доступные стили Qt."""
+        qt_styles = sorted(QStyleFactory.keys(), key=str.casefold)
+        return (H5ModernStyle.NAME, *qt_styles)
+
+    def apply(
+        self,
+        dark: bool | None = None,
+        style_name: str | None = None,
+    ) -> None:
         """Применить выбранную палитру и сохранить настройку."""
         if dark is not None:
             self._dark = dark
+        if style_name is not None:
+            self._style_name = self._resolve_style_name(style_name)
         colors = _DARK if self._dark else _LIGHT
-        self._application.setStyle("Fusion")
+        self._application.setStyle(self._create_style(self._style_name))
         self._application.setFont(self._system_font())
         self._application.setPalette(self._palette(colors))
         self._application.setStyleSheet(self._style_sheet(colors))
         self._settings.setValue("ui/dark_theme", self._dark)
+        self._settings.setValue("ui/widget_style", self._style_name)
         self.theme_changed.emit(self._dark)
+
+    @classmethod
+    def _resolve_style_name(cls, requested: str) -> str:
+        """Найти стиль без учёта регистра или выбрать H5 Modern."""
+        return next(
+            (
+                available
+                for available in cls.available_styles()
+                if available.casefold() == requested.casefold()
+            ),
+            H5ModernStyle.NAME,
+        )
+
+    @staticmethod
+    def _create_style(style_name: str) -> QStyle:
+        """Создать новый экземпляр выбранного стиля для QApplication."""
+        if style_name == H5ModernStyle.NAME:
+            return H5ModernStyle()
+        style = QStyleFactory.create(style_name)
+        return style if style is not None else H5ModernStyle()
 
     @staticmethod
     def _system_font() -> QFont:
@@ -308,6 +389,45 @@ class ThemeManager(QObject):
                 background: {colors.surface_alt};
                 border-color: {colors.border};
                 color: {colors.text_disabled};
+            }}
+            QGroupBox {{
+                border: 1px solid {colors.border};
+                border-radius: 8px;
+                font-weight: 600;
+                margin-top: 10px;
+                padding-top: 8px;
+            }}
+            QGroupBox::title {{
+                background: {colors.canvas};
+                color: {colors.text_muted};
+                left: 10px;
+                padding: 0 5px;
+                subcontrol-origin: margin;
+            }}
+            QProgressDialog {{
+                min-width: 460px;
+            }}
+            QProgressDialog QLabel {{
+                color: {colors.text};
+                min-width: 390px;
+                padding: 4px 2px;
+            }}
+            QProgressBar {{
+                background: {colors.surface_alt};
+                border: 1px solid {colors.border};
+                border-radius: 8px;
+                color: {colors.text};
+                font-weight: 600;
+                min-height: 18px;
+                text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 1, y2: 0,
+                    stop: 0 {colors.accent_hover}, stop: 1 {colors.accent}
+                );
+                border: 2px solid {colors.surface_alt};
+                border-radius: 7px;
             }}
             QPushButton#rootButton {{
                 background: {colors.accent_soft};

@@ -33,7 +33,7 @@ from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import LinkRef, ObjectKind, split_hdf5_path
 from h5viewer.presentation.qt.dialogs import DatasetCreationDialog, LinkCreationDialog
-from h5viewer.presentation.qt.icons import object_icon
+from h5viewer.presentation.qt.icons import interface_icon, object_icon
 from h5viewer.presentation.qt.models import HdfTreeModel
 from h5viewer.presentation.qt.translations import tr
 
@@ -112,6 +112,10 @@ class BrowserPane(QWidget):
         self.filter_edit = QLineEdit(self)
         self.filter_edit.setObjectName("filterEdit")
         self.filter_edit.setClearButtonEnabled(True)
+        self.filter_icon_action = self.filter_edit.addAction(
+            interface_icon("search"),
+            QLineEdit.ActionPosition.LeadingPosition,
+        )
         self.filter_edit.textChanged.connect(self._proxy.setFilterFixedString)
         layout.addWidget(self.filter_edit)
 
@@ -191,6 +195,7 @@ class BrowserPane(QWidget):
         """Обновить значки после смены светлой или тёмной темы."""
         for index in range(self.document_combo.count()):
             self.document_combo.setItemIcon(index, object_icon("file"))
+        self.filter_icon_action.setIcon(interface_icon("search"))
         self.tree.viewport().update()
 
     def select_document(self, session: DocumentSession) -> None:

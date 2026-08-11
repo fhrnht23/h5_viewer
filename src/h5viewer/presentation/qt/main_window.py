@@ -42,6 +42,7 @@ from h5viewer.presentation.qt.analysis_dialogs import (
 from h5viewer.presentation.qt.icons import interface_icon
 from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
+from h5viewer.presentation.qt.settings_dialog import AppearanceSettingsDialog
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager, tr
 
@@ -193,6 +194,9 @@ class MainWindow(QMainWindow):
         self.dark_theme_action = QAction("", self, checkable=True)
         self.dark_theme_action.setChecked(self._theme_manager.dark)
         self.dark_theme_action.toggled.connect(self._theme_manager.apply)
+        self.appearance_settings_action = QAction("", self)
+        self.appearance_settings_action.setShortcut(QKeySequence("Ctrl+,"))
+        self.appearance_settings_action.triggered.connect(self.show_appearance_settings)
         self.russian_action = QAction("", self, checkable=True)
         self.russian_action.setData("ru")
         self.english_action = QAction("", self, checkable=True)
@@ -231,6 +235,8 @@ class MainWindow(QMainWindow):
         )
         self.view_menu = self.menuBar().addMenu("")
         self.view_menu.addActions([self.refresh_action, self.dark_theme_action])
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self.appearance_settings_action)
         self.tools_menu = self.menuBar().addMenu("")
         self.tools_menu.addActions([self.search_metadata_action, self.compare_panes_action])
         self.language_menu = self.menuBar().addMenu("")
@@ -312,6 +318,9 @@ class MainWindow(QMainWindow):
 
     def _theme_changed(self, _dark: bool) -> None:
         """Перерисовать зависящие от палитры векторные значки."""
+        self.dark_theme_action.blockSignals(True)
+        self.dark_theme_action.setChecked(self._theme_manager.dark)
+        self.dark_theme_action.blockSignals(False)
         self._update_action_icons()
         for pane in (self.left_pane, self.right_pane):
             pane.refresh_visuals()
@@ -331,6 +340,7 @@ class MainWindow(QMainWindow):
             (self.copy_left_action, "copy_left", False),
             (self.move_right_action, "move_right", False),
             (self.move_left_action, "move_left", False),
+            (self.appearance_settings_action, "settings", False),
         )
         for action, name, accent in icons:
             action.setIcon(interface_icon(name, accent=accent))
@@ -362,6 +372,7 @@ class MainWindow(QMainWindow):
             (self.search_metadata_action, "Search metadata…"),
             (self.compare_panes_action, "Compare panes…"),
             (self.dark_theme_action, "Dark theme"),
+            (self.appearance_settings_action, "Appearance settings…"),
             (self.russian_action, "Russian"),
             (self.english_action, "English"),
             (self.about_action, "About"),
@@ -891,6 +902,11 @@ class MainWindow(QMainWindow):
             tr("MainWindow", "About H5 Viewer"),
             tr("MainWindow", "Cross-platform two-pane HDF5 viewer and safe editor."),
         )
+
+    def show_appearance_settings(self) -> None:
+        """Открыть настройки с живым предпросмотром оформления."""
+        dialog = AppearanceSettingsDialog(self._theme_manager, self)
+        dialog.exec()
 
     def _show_object(self, session: DocumentSession, link: LinkRef) -> None:
         self._active_session = session

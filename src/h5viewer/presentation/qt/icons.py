@@ -1,42 +1,103 @@
-"""Компактные векторные значки, не зависящие от системной темы ОС."""
+"""Единый набор качественных векторных значков интерфейса."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, QRectF, Qt
 from PySide6.QtGui import QIcon, QPainter, QPalette, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
 
+# Контуры взяты из Tabler Icons 3.44.0 (MIT) и хранятся внутри пакета,
+# чтобы значки одинаково отображались на всех платформах и без доступа к сети.
 _PATHS = {
-    "new": ('<path d="M6 3.5h7l4 4v13H6z"/><path d="M13 3.5v4h4M8.5 14h6M11.5 11v6"/>'),
-    "open": ('<path d="M3.5 7.5h6l2-2h8v3"/><path d="M4.5 8.5h16l-2.5 10H6z"/>'),
-    "edit": ('<path d="M5 19l1-4 9.8-9.8 3 3L9 18z"/><path d="M14.5 6.5l3 3M4.5 20h15"/>'),
-    "save": ('<path d="M4 4h13l3 3v13H4z"/><path d="M8 4v6h8V4M8 20v-6h8v6"/>'),
-    "discard": ('<path d="M7 7l10 10M17 7L7 17"/><circle cx="12" cy="12" r="9"/>'),
-    "undo": '<path d="M9 7L4 12l5 5M5 12h8a6 6 0 0 1 6 6"/>',
-    "redo": '<path d="M15 7l5 5-5 5M19 12h-8a6 6 0 0 0-6 6"/>',
-    "refresh": ('<path d="M19 8V4l-2 2a8 8 0 1 0 2.2 8"/><path d="M19 4h-4"/>'),
+    "new": (
+        '<path d="M14 3v4a1 1 0 0 0 1 1h4"/>'
+        '<path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11'
+        'a2 2 0 0 1 -2 2"/>'
+        '<path d="M12 11v6M9 14h6"/>'
+    ),
+    "open": (
+        '<path d="M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 '
+        '.986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11'
+        'a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2"/>'
+    ),
+    "edit": (
+        '<path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4"/>'
+        '<path d="M13.5 6.5l4 4"/>'
+    ),
+    "save": (
+        '<path d="M6 4h10l4 4v10a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12'
+        'a2 2 0 0 1 2 -2"/>'
+        '<path d="M10 14a2 2 0 1 0 4 0a2 2 0 1 0 -4 0M14 4v4H8V4"/>'
+    ),
+    "discard": (
+        '<path d="M14 3v4a1 1 0 0 0 1 1h4"/>'
+        '<path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11'
+        'a2 2 0 0 1 -2 2"/>'
+        '<path d="M10 12l4 4M14 12l-4 4"/>'
+    ),
+    "undo": '<path d="M9 14l-4 -4l4 -4M5 10h11a4 4 0 1 1 0 8h-1"/>',
+    "redo": '<path d="M15 14l4 -4l-4 -4M19 10H8a4 4 0 1 0 0 8h1"/>',
+    "refresh": (
+        '<path d="M20 11a8.1 8.1 0 0 0 -15.5 -2M4 5v4h4"/>'
+        '<path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4"/>'
+    ),
     "copy_right": (
-        '<rect x="3" y="6" width="8" height="11" rx="1.5"/>'
-        '<path d="M8 3h7a2 2 0 0 1 2 2v3M14 14h7M18 11l3 3-3 3"/>'
+        '<path d="M7 9.667A2.667 2.667 0 0 1 9.667 7h8.666A2.667 2.667 0 0 1 21 '
+        '9.667v8.666A2.667 2.667 0 0 1 18.333 21H9.667A2.667 2.667 0 0 1 7 '
+        '18.333z"/>'
+        '<path d="M4.012 16.737A2.005 2.005 0 0 1 3 15V5c0 -1.1 .9 -2 2 -2h10'
+        'c.75 0 1.158 .385 1.5 1"/>'
     ),
     "copy_left": (
-        '<rect x="13" y="6" width="8" height="11" rx="1.5"/>'
-        '<path d="M16 3H9a2 2 0 0 0-2 2v3M10 14H3M6 11l-3 3 3 3"/>'
+        '<path d="M7 9.667A2.667 2.667 0 0 1 9.667 7h8.666A2.667 2.667 0 0 1 21 '
+        '9.667v8.666A2.667 2.667 0 0 1 18.333 21H9.667A2.667 2.667 0 0 1 7 '
+        '18.333z"/>'
+        '<path d="M4.012 16.737A2.005 2.005 0 0 1 3 15V5c0 -1.1 .9 -2 2 -2h10'
+        'c.75 0 1.158 .385 1.5 1"/>'
     ),
-    "move_right": '<path d="M3 12h17M15 7l5 5-5 5"/>',
-    "move_left": '<path d="M21 12H4M9 7l-5 5 5 5"/>',
-    "folder": '<path d="M3 7h7l2-2h9v14H3z"/>',
+    "move_right": '<path d="M5 12h14M13 18l6 -6M13 6l6 6"/>',
+    "move_left": '<path d="M5 12h14M5 12l6 6M5 12l6 -6"/>',
+    "folder": (
+        '<path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14'
+        'a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2"/>'
+    ),
     "dataset": (
-        '<ellipse cx="12" cy="6" rx="8" ry="3"/>'
-        '<path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>'
+        '<path d="M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0"/>'
+        '<path d="M4 6v6a8 3 0 0 0 16 0V6M4 12v6a8 3 0 0 0 16 0v-6"/>'
     ),
-    "datatype": '<path d="M5 5h14M12 5v14M8 19h8"/>',
-    "link": '<path d="M9.5 14.5l5-5M7 16.5H6a4 4 0 0 1 0-8h4M17 7.5h1a4 4 0 0 1 0 8h-4"/>',
-    "file": '<path d="M6 3.5h7l5 5v12H6zM13 3.5v5h5"/>',
-    "warning": '<path d="M12 3l10 18H2zM12 9v5M12 18v.1"/>',
+    "datatype": (
+        '<path d="M4 20h3M14 20h7M6.9 15h6.9M10.2 6.3L16 20M5 20l6 -16h2l7 16"/>'
+    ),
+    "link": (
+        '<path d="M9 15l6 -6M11 6l.463 -.536a5 5 0 0 1 7.071 7.072L18 13"/>'
+        '<path d="M13 18l-.397 .534a5.068 5.068 0 0 1 -7.127 0a4.972 4.972 0 0 1 '
+        '0 -7.071L6 11"/>'
+    ),
+    "file": (
+        '<path d="M14 3v4a1 1 0 0 0 1 1h4"/>'
+        '<path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11'
+        'a2 2 0 0 1 -2 2"/>'
+    ),
+    "warning": (
+        '<path d="M12 9v4M12 16h.01"/>'
+        '<path d="M10.363 3.591L2.257 17.125a1.914 1.914 0 0 0 1.636 2.871h16.214'
+        'a1.914 1.914 0 0 0 1.636 -2.87L13.637 3.59a1.914 1.914 0 0 0 -3.274 0"/>'
+    ),
+    "settings": (
+        '<path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 '
+        '2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 '
+        '2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573'
+        'c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065'
+        'c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066'
+        'c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572'
+        'c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573'
+        'c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065"/>'
+        '<path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0"/>'
+    ),
+    "search": '<path d="M3 10a7 7 0 1 0 14 0a7 7 0 1 0 -14 0M21 21l-6 -6"/>',
 }
 
 
@@ -61,14 +122,14 @@ def _render_icon(name: str, color: str) -> QIcon:
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" '
         f'viewBox="0 0 24 24" fill="none" stroke="{color}" '
-        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
         f"{paths}</svg>"
     )
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
-    pixmap = QPixmap(48, 48)
+    pixmap = QPixmap(72, 72)
     pixmap.fill(Qt.GlobalColor.transparent)
-    pixmap.setDevicePixelRatio(2.0)
+    pixmap.setDevicePixelRatio(3.0)
     painter = QPainter(pixmap)
-    renderer.render(painter)
+    renderer.render(painter, QRectF(0.0, 0.0, 24.0, 24.0))
     painter.end()
     return QIcon(pixmap)
