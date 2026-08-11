@@ -45,7 +45,7 @@ Updated: 2026-08-11
 
 ### M4 — extensibility, resilience, and distribution
 
-- [ ] Versioned entry-point plugin API and sample plugin.
+- [x] Versioned entry-point plugin API and sample plugin.
 - [x] Process-isolated validation before commit.
 - [ ] Crash injection and large-file performance tests.
 - [ ] Packaging and CI matrix for Windows, macOS, and Linux.

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
@@ -32,6 +34,7 @@ from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.files import create_empty_hdf5
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 from h5viewer.infrastructure.hdf5.validation import validate_hdf5_in_subprocess
+from h5viewer.plugins.api import LocalizedText, ObjectSelection, PluginRegistration
 from h5viewer.presentation.qt.analysis_dialogs import (
     FileComparisonDialog,
     MetadataSearchDialog,
@@ -40,6 +43,9 @@ from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
 from h5viewer.presentation.qt.theme import ThemeManager
 from h5viewer.presentation.qt.translations import LanguageManager, tr
+
+if TYPE_CHECKING:
+    from h5viewer.plugins.loader import PluginLoadReport, PluginManager
 
 
 @dataclass(slots=True)
@@ -51,6 +57,20 @@ class CoordinatedMove:
     source_command: DeleteLinkCommand
     destination_command: CopyObjectCommand
     applied: bool = True
+
+
+class _QtPluginActionRegistration(PluginRegistration):
+    """Одноразовый дескриптор удаления команды плагина из Qt-меню."""
+
+    def __init__(self, remove_callback: Callable[[], None]) -> None:
+        self._remove_callback: Callable[[], None] | None = remove_callback
+
+    def remove(self) -> None:
+        if self._remove_callback is None:
+            return
+        callback = self._remove_callback
+        self._remove_callback = None
+        callback()
 
 
 class MainWindow(QMainWindow):
@@ -69,6 +89,9 @@ class MainWindow(QMainWindow):
         self._coordinated_moves: list[CoordinatedMove] = []
         self._active_session: DocumentSession | None = None
         self._active_link: LinkRef | None = None
+        self._plugin_manager: PluginManager | None = None
+        self._plugin_actions: dict[tuple[str, str], tuple[QAction, LocalizedText]] = {}
+        self._plugin_separator: QAction | None = None
         self._build_ui()
         self._create_actions()
         self._create_menus()
@@ -282,6 +305,8 @@ class MainWindow(QMainWindow):
         )
         for action, source in action_texts:
             action.setText(tr("MainWindow", source))
+        for action, title in self._plugin_actions.values():
+            action.setText(title.resolve(self.language))
         toolbar_texts = (
             (self.new_action, "New"),
             (self.open_action, "Open"),
@@ -307,6 +332,93 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self._object_status_text(self._active_link))
         elif not self._documents:
             self.statusBar().showMessage(tr("MainWindow", "Ready"))
+
+    @property
+    def language(self) -> str:
+        """Вернуть текущий язык для публичного API плагинов."""
+        return self._language_manager.language
+
+    def current_selection(self) -> ObjectSelection | None:
+        """Подготовить стабильное описание выбранного объекта для плагина."""
+        if self._active_session is None or self._active_link is None:
+            return None
+        return ObjectSelection(
+            document_path=self._active_session.original_path,
+            object_path=self._active_link.path,
+            object_kind=self._active_link.object_kind.value,
+            link_kind=self._active_link.link_kind.value,
+            editing=self._active_session.is_editing,
+        )
+
+    def add_tools_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        title: LocalizedText,
+        callback: Callable[[], None],
+    ) -> PluginRegistration:
+        """Добавить безопасно обёрнутую команду плагина в меню инструментов."""
+        key = (plugin_id.strip(), action_id.strip())
+        if not all(key):
+            raise ValueError("plugin_id и action_id не должны быть пустыми")
+        if key in self._plugin_actions:
+            raise ValueError(f"Команда плагина уже зарегистрирована: {plugin_id}/{action_id}")
+        if self._plugin_separator is None:
+            self._plugin_separator = self.tools_menu.addSeparator()
+        action = QAction(title.resolve(self.language), self)
+        action.setObjectName(f"plugin:{key[0]}:{key[1]}")
+
+        def invoke(_checked: bool = False) -> None:
+            try:
+                callback()
+            except Exception as exc:
+                self.show_information(
+                    LocalizedText("Ошибка плагина", "Plugin error"),
+                    LocalizedText(str(exc), str(exc)),
+                )
+
+        action.triggered.connect(invoke)
+        self.tools_menu.addAction(action)
+        self._plugin_actions[key] = (action, title)
+        return _QtPluginActionRegistration(lambda: self._remove_plugin_action(key, action))
+
+    def show_information(self, title: LocalizedText, message: LocalizedText) -> None:
+        """Показать локализованное сообщение от плагина."""
+        QMessageBox.information(
+            self,
+            title.resolve(self.language),
+            message.resolve(self.language),
+        )
+
+    def show_status(self, message: LocalizedText, duration_ms: int = 5000) -> None:
+        """Показать локализованное сообщение плагина в status bar."""
+        self.statusBar().showMessage(message.resolve(self.language), duration_ms)
+
+    def install_plugins(self, manager: PluginManager) -> PluginLoadReport:
+        """Загрузить entry-point плагины после создания меню главного окна."""
+        self._plugin_manager = manager
+        report = manager.load(self)
+        if report.issues:
+            self.statusBar().showMessage(
+                tr("MainWindow", "Plugins failed to load: {count}").format(
+                    count=len(report.issues)
+                ),
+                8000,
+            )
+        return report
+
+    def _remove_plugin_action(self, key: tuple[str, str], action: QAction) -> None:
+        """Удалить только ту регистрацию, которой принадлежит дескриптор."""
+        registered = self._plugin_actions.get(key)
+        if registered is None or registered[0] is not action:
+            return
+        del self._plugin_actions[key]
+        self.tools_menu.removeAction(action)
+        action.deleteLater()
+        if not self._plugin_actions and self._plugin_separator is not None:
+            self.tools_menu.removeAction(self._plugin_separator)
+            self._plugin_separator.deleteLater()
+            self._plugin_separator = None
 
     def create_file(self) -> None:
         """Создать пустой HDF5-файл и сразу открыть его."""
@@ -966,6 +1078,8 @@ class MainWindow(QMainWindow):
         self._settings.setValue("main/state", self.saveState())
         self._settings.setValue("main/pane_splitter", self.pane_splitter.sizes())
         self._settings.setValue("inspector/geometry", self.inspector_window.saveGeometry())
+        if self._plugin_manager is not None:
+            self._plugin_manager.close()
         self.inspector_window.close()
         event.accept()
 

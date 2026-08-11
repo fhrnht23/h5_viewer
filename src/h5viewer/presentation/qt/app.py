@@ -10,6 +10,7 @@ from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from h5viewer.plugins.loader import PluginManager
 from h5viewer.presentation.qt.main_window import MainWindow
 from h5viewer.presentation.qt.platform import prepare_qt_platform_plugins
 from h5viewer.presentation.qt.theme import ThemeManager
@@ -36,6 +37,7 @@ def create_application(arguments: Sequence[str] | None = None) -> tuple[QApplica
     theme = ThemeManager(application)
     theme.apply()
     window = MainWindow(language, theme)
+    window.install_plugins(PluginManager())
     # Менеджеры принадлежат приложению логически, но окно удерживает Python-ссылки на них.
     return application, window
 

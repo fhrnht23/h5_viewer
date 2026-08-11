@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt
 
 from h5viewer.domain.models import DatasetExtent, LinkKind
+from h5viewer.plugins import LocalizedText
 from h5viewer.presentation.qt.analysis_dialogs import (
     FileComparisonDialog,
     MetadataSearchDialog,
@@ -31,8 +32,22 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
 
     assert language.language == "ru"
     assert window.open_action.text() == "Открыть…"
+    invoked: list[bool] = []
+    registration = window.add_tools_action(
+        "org.example.test",
+        "run",
+        LocalizedText("Команда плагина", "Plugin action"),
+        lambda: invoked.append(True),
+    )
+    plugin_action = window._plugin_actions[("org.example.test", "run")][0]
+    assert plugin_action.text() == "Команда плагина"
     language.set_language("en")
     assert window.open_action.text() == "Open…"
+    assert plugin_action.text() == "Plugin action"
+    plugin_action.trigger()
+    assert invoked == [True]
+    registration.remove()
+    assert not window._plugin_actions
     language.set_language("ru")
 
 

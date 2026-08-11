@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "h5viewer-object-summary"
+version = "0.1.0"
+description = "Пример расширения H5 Viewer API v1"
+requires-python = ">=3.10"
+dependencies = ["h5viewer>=0.1,<1"]
+
+[project.entry-points."h5viewer.plugins"]
+object-summary = "h5viewer_object_summary:create_plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/h5viewer_object_summary"]
