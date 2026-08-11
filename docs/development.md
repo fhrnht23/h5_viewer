@@ -23,6 +23,9 @@ QT_QPA_PLATFORM=offscreen pytest
 h5viewer
 ```
 
+CI повторяет эти проверки на Python 3.10 и 3.12 под Windows, macOS и Linux. Сборка Python- и
+desktop-пакетов описана в [distribution.md](distribution.md).
+
 На macOS и Linux `QT_QPA_PLATFORM=offscreen` используется только для GUI-тестов. Обычный запуск не
 требует этой переменной.
 

@@ -18,6 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 plots = ["pyqtgraph>=0.13.7,<1"]
+packaging = [
+    "build>=1.2,<2",
+    "pyinstaller>=6.20,<7",
+    "pyqtgraph>=0.13.7,<1",
+]
 dev = [
     "mypy>=1.11,<2",
     "pytest>=8.3,<10",

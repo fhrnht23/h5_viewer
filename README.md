@@ -46,6 +46,13 @@ h5viewer
 python -m pip install -e '.[plots]'
 ```
 
+Самостоятельный пакет для текущей операционной системы собирается так:
+
+```bash
+python -m pip install -e '.[packaging]'
+python scripts/build_desktop.py
+```
+
 В Windows окружение активируется командой `.venv\Scripts\activate`.
 
 ## Проверки
@@ -59,4 +66,5 @@ pytest
 
 Состояние и следующие этапы разработки фиксируются в [PLANS.md](PLANS.md). Архитектура описана в
 [docs/architecture.md](docs/architecture.md), а протокол безопасного сохранения — в
-[docs/safe-saving.md](docs/safe-saving.md).
+[docs/safe-saving.md](docs/safe-saving.md). Команды упаковки и устройство CI приведены в
+[docs/distribution.md](docs/distribution.md).
