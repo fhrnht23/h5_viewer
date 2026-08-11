@@ -79,6 +79,43 @@ def test_same_document_is_shared_by_both_panes(
     assert model.data(numeric_index.siblingAtColumn(2)) == "(9, 8, 7)"
 
 
+def test_enter_opens_separate_inspector_and_panels_use_full_window(
+    qtbot: object, qapp: object, sample_hdf5: Path
+) -> None:
+    QSettings().clear()
+    language = LanguageManager(qapp)  # type: ignore[arg-type]
+    language.load()
+    theme = ThemeManager(qapp)  # type: ignore[arg-type]
+    window = MainWindow(language, theme)
+    qtbot.addWidget(window)  # type: ignore[attr-defined]
+    window.show()
+    document = window._open_path(sample_hdf5)
+    assert document is not None
+    assert window.centralWidget() is window.pane_splitter
+    assert not window.inspector_window.isVisible()
+
+    model = window.left_pane._model
+    assert model is not None
+    root_index = model.index(0, 0)
+    if model.canFetchMore(root_index):
+        model.fetchMore(root_index)
+    numeric_alias = next(
+        model.index(row, 0, root_index)
+        for row in range(model.rowCount(root_index))
+        if model.data(model.index(row, 0, root_index)) == "numeric_alias"
+    )
+    proxy_index = window.left_pane._proxy.mapFromSource(numeric_alias)
+    window.left_pane.tree.setCurrentIndex(proxy_index)
+    window.left_pane.tree.setFocus()
+    qtbot.keyClick(window.left_pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+
+    assert window.inspector_window.isVisible()
+    assert window._active_link is not None
+    assert window._active_link.path == "/numeric_alias"
+    assert "shape=(3, 4, 5)" in window.statusBar().currentMessage()
+    assert "Enter: открыть инспектор" in window.statusBar().currentMessage()
+
+
 def test_inspector_shows_rich_metadata_and_opens_reference(
     qtbot: object, qapp: object, sample_hdf5: Path
 ) -> None:

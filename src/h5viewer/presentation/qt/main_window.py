@@ -9,6 +9,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QInputDialog,
     QMainWindow,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStyle,
     QToolBar,
+    QVBoxLayout,
 )
 
 from h5viewer.application.commands import (
@@ -85,15 +87,16 @@ class MainWindow(QMainWindow):
         self.pane_splitter.setChildrenCollapsible(False)
         self.pane_splitter.setStretchFactor(0, 1)
         self.pane_splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(self.pane_splitter)
 
-        self.inspector = ObjectInspector(self.ensure_editing, self)
-        self.main_splitter = QSplitter(Qt.Orientation.Vertical, self)
-        self.main_splitter.addWidget(self.pane_splitter)
-        self.main_splitter.addWidget(self.inspector)
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.setStretchFactor(0, 3)
-        self.main_splitter.setStretchFactor(1, 2)
-        self.setCentralWidget(self.main_splitter)
+        self.inspector_window = QDialog(self, Qt.WindowType.Window)
+        self.inspector_window.setObjectName("object_inspector_window")
+        self.inspector_window.setModal(False)
+        inspector_layout = QVBoxLayout(self.inspector_window)
+        inspector_layout.setContentsMargins(6, 6, 6, 6)
+        self.inspector = ObjectInspector(self.ensure_editing, self.inspector_window)
+        inspector_layout.addWidget(self.inspector)
+        self.inspector_window.resize(1050, 720)
         self.statusBar().showMessage("")
 
     def _create_actions(self) -> None:
@@ -236,6 +239,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         for pane in (self.left_pane, self.right_pane):
             pane.object_selected.connect(self._show_object)
+            pane.object_open_requested.connect(self._open_object_inspector)
             pane.document_changed.connect(self._activate_session)
             pane.content_changed.connect(self._content_changed)
             pane.status_message.connect(self.statusBar().showMessage)
@@ -297,8 +301,11 @@ class MainWindow(QMainWindow):
         self.left_pane.retranslate_ui()
         self.right_pane.retranslate_ui()
         self.inspector.retranslate_ui()
+        self._update_inspector_title()
         self._update_title()
-        if not self._documents:
+        if self._active_link is not None:
+            self.statusBar().showMessage(self._object_status_text(self._active_link))
+        elif not self._documents:
             self.statusBar().showMessage(tr("MainWindow", "Ready"))
 
     def create_file(self) -> None:
@@ -471,6 +478,7 @@ class MainWindow(QMainWindow):
         self._active_link = None
         if preferred is None:
             self.inspector.clear_inspector()
+            self.inspector_window.hide()
         self._update_actions()
         self._update_title()
 
@@ -713,8 +721,40 @@ class MainWindow(QMainWindow):
         self._active_session = session
         self._active_link = link
         self.inspector.show_object(session, link)
+        self._update_inspector_title()
         self._update_actions()
         self._update_title()
+        self.statusBar().showMessage(self._object_status_text(link))
+
+    def _open_object_inspector(self, session: DocumentSession, link: LinkRef) -> None:
+        """Показать выбранный объект в отдельном немодальном окне."""
+        self._show_object(session, link)
+        self.inspector_window.show()
+        self.inspector_window.raise_()
+        self.inspector_window.activateWindow()
+
+    def _object_status_text(self, link: LinkRef) -> str:
+        """Собрать краткую локализованную сводку для status bar."""
+        parts = [link.path, tr("Type", link.object_kind.value)]
+        if link.shape is not None:
+            parts.append(f"shape={link.shape}")
+        if link.dtype:
+            parts.append(f"dtype={link.dtype}")
+        if link.storage:
+            parts.append(link.storage)
+        if link.link_kind.value not in {"root", "hard"}:
+            parts.append(f"link={tr('Type', link.link_kind.value)}")
+        if link.child_count is not None:
+            parts.append(f"{tr('MainWindow', 'Objects')}: {link.child_count}")
+        parts.append(tr("MainWindow", "Enter: open inspector"))
+        return " · ".join(parts)
+
+    def _update_inspector_title(self) -> None:
+        """Обновить заголовок отдельного окна инспектора."""
+        title = tr("MainWindow", "Object inspector")
+        if self._active_link is not None:
+            title = f"{self._active_link.path} — {title}"
+        self.inspector_window.setWindowTitle(title)
 
     def _open_reference_target(self, session: DocumentSession, path: str) -> None:
         """Открыть в инспекторе доступную цель object или region reference."""
@@ -723,7 +763,7 @@ class MainWindow(QMainWindow):
         except H5ViewerError as exc:
             self._show_error(str(exc))
             return
-        self._show_object(session, link)
+        self._open_object_inspector(session, link)
         self.statusBar().showMessage(tr("MainWindow", "Reference target opened"), 5000)
 
     def search_metadata(self) -> None:
@@ -751,7 +791,7 @@ class MainWindow(QMainWindow):
         except H5ViewerError as exc:
             self._show_error(str(exc))
             return
-        self._show_object(session, link)
+        self._open_object_inspector(session, link)
 
     def _activate_session(self, session: DocumentSession) -> None:
         self._active_session = session
@@ -904,18 +944,18 @@ class MainWindow(QMainWindow):
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("main/geometry")
         state = self._settings.value("main/state")
-        main_sizes = self._settings.value("main/splitter")
         pane_sizes = self._settings.value("main/pane_splitter")
+        inspector_geometry = self._settings.value("inspector/geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
         else:
             self.resize(1400, 900)
         if state is not None:
             self.restoreState(state)
-        if isinstance(main_sizes, list):
-            self.main_splitter.setSizes([int(value) for value in main_sizes])
         if isinstance(pane_sizes, list):
             self.pane_splitter.setSizes([int(value) for value in pane_sizes])
+        if inspector_geometry is not None:
+            self.inspector_window.restoreGeometry(inspector_geometry)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         for session in list(self._documents):
@@ -924,8 +964,9 @@ class MainWindow(QMainWindow):
                 return
         self._settings.setValue("main/geometry", self.saveGeometry())
         self._settings.setValue("main/state", self.saveState())
-        self._settings.setValue("main/splitter", self.main_splitter.sizes())
         self._settings.setValue("main/pane_splitter", self.pane_splitter.sizes())
+        self._settings.setValue("inspector/geometry", self.inspector_window.saveGeometry())
+        self.inspector_window.close()
         event.accept()
 
     def _show_error(self, message: str) -> None:

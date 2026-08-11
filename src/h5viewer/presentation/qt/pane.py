@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QSortFilterProxyModel, Qt, Signal
-from PySide6.QtGui import QAction, QStandardItemModel
+from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -35,10 +35,24 @@ from h5viewer.presentation.qt.models import HdfTreeModel
 from h5viewer.presentation.qt.translations import tr
 
 
+class ObjectTreeView(QTreeView):
+    """Дерево, резервирующее Enter для открытия инспектора объекта."""
+
+    open_requested = Signal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+            self.open_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class BrowserPane(QWidget):
     """Независимая панель выбора документа и навигации по его графу."""
 
     object_selected = Signal(object, object)
+    object_open_requested = Signal(object, object)
     status_message = Signal(str)
     document_changed = Signal(object)
     content_changed = Signal(object)
@@ -89,7 +103,7 @@ class BrowserPane(QWidget):
         self.filter_edit.textChanged.connect(self._proxy.setFilterFixedString)
         layout.addWidget(self.filter_edit)
 
-        self.tree = QTreeView(self)
+        self.tree = ObjectTreeView(self)
         self.tree.setAlternatingRowColors(True)
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
@@ -97,6 +111,7 @@ class BrowserPane(QWidget):
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.clicked.connect(self._tree_clicked)
         self.tree.doubleClicked.connect(self._tree_double_clicked)
+        self.tree.open_requested.connect(self._open_current_link)
         self.tree.setModel(self._proxy)
         layout.addWidget(self.tree, 1)
 
@@ -207,16 +222,32 @@ class BrowserPane(QWidget):
     def _tree_double_clicked(self, proxy_index: Any) -> None:
         if not proxy_index.isValid():
             return
+        link = self.current_link()
+        if link is not None and link.object_kind is not ObjectKind.GROUP:
+            self._open_current_link()
+            return
         if self.tree.isExpanded(proxy_index):
             self.tree.collapse(proxy_index)
         else:
             self.tree.expand(proxy_index)
+
+    def _open_current_link(self) -> None:
+        """Открыть выбранный объект в отдельном инспекторе."""
+        link = self.current_link()
+        if self._session is not None and link is not None:
+            self.object_open_requested.emit(self._session, link)
 
     def _show_context_menu(self, position: Any) -> None:
         if self._session is None:
             return
         link = self.current_link()
         menu = QMenu(self)
+        inspect = QAction(tr("Pane", "Open inspector"), menu)
+        inspect.setShortcut(QKeySequence(Qt.Key.Key_Return))
+        inspect.setEnabled(link is not None)
+        inspect.triggered.connect(self._open_current_link)
+        menu.addAction(inspect)
+        menu.addSeparator()
         create_group = QAction(tr("Pane", "Create group…"), menu)
         create_group.triggered.connect(lambda: self._create_group(link))
         menu.addAction(create_group)
