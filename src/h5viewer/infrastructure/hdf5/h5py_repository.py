@@ -1469,7 +1469,8 @@ def _validate_link_name(name: str) -> None:
 
 def _fsync_file(path: Path) -> None:
     """Гарантировать запись готового снимка на носитель перед изменением файла."""
-    with path.open("rb") as handle:
+    # Windows реализует os.fsync() через _commit(), которому нужен дескриптор с правом записи.
+    with path.open("rb+") as handle:
         os.fsync(handle.fileno())
 
 
