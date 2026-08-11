@@ -1,6 +1,6 @@
 # H5 Viewer — execution plan
 
-Updated: 2026-08-10
+Updated: 2026-08-11
 
 ## Product decisions
 
@@ -36,7 +36,7 @@ Updated: 2026-08-10
 ### M3 — richer HDF5 operations
 
 - [x] Dataset creation dialog and safe expansion within maxshape.
-- [ ] Destructive dataset shrinking with disk-backed undo snapshots.
+- [x] Destructive dataset shrinking with disk-backed undo snapshots.
 - [x] Undoable object/link copying inside and across documents.
 - [x] Link creation, safe deletion, and coordinated move inside/across documents.
 - [x] Object/reference inspectors and VDS/dimension-scale details.

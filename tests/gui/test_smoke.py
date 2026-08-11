@@ -211,6 +211,11 @@ def test_dataset_dialogs_build_typed_requests(qtbot: object, qapp: object) -> No
     resize.shape_edit.setText("8, 3")
     assert resize.new_shape() == (8, 3)
 
+    shrink = ResizeDatasetDialog(DatasetExtent(shape=(4, 3), maxshape=(None, 3), chunks=(2, 3)))
+    qtbot.addWidget(shrink)  # type: ignore[attr-defined]
+    shrink.shape_edit.setText("2, 3")
+    assert shrink.new_shape() == (2, 3)
+
     link = LinkCreationDialog("/data", Path("/tmp/source.h5"))
     qtbot.addWidget(link)  # type: ignore[attr-defined]
     link.name_edit.setText("external_link")

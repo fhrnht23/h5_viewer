@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import h5py
+import numpy as np
 import pytest
 
 from h5viewer.application.commands import (
@@ -20,7 +21,12 @@ from h5viewer.application.commands import (
 )
 from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import SaveConflictError
-from h5viewer.domain.models import DatasetCreationOptions, LinkCreationOptions, LinkKind
+from h5viewer.domain.models import (
+    DatasetCreationOptions,
+    LinkCreationOptions,
+    LinkKind,
+    default_dataset_slice,
+)
 from h5viewer.infrastructure.hdf5.copying import copy_hdf5_object
 from h5viewer.infrastructure.hdf5.h5py_repository import H5pyRepository
 
@@ -184,6 +190,45 @@ def test_dataset_creation_and_resize_are_undoable(sample_hdf5: Path, tmp_path: P
         assert dataset.shape == (4, 2)
         assert dataset.maxshape == (None, 2)
         assert dataset[3, 1] == 7
+
+
+def test_dataset_shrink_snapshot_restores_discarded_data(
+    sample_hdf5: Path,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "dataset-shrink.h5"
+    shutil.copy2(sample_hdf5, path)
+    session = _session(path)
+    session.begin_edit()
+    original_values = np.arange(60, dtype=np.float64).reshape(3, 4, 5)
+
+    session.execute(ResizeDatasetCommand("/data/numeric", (2, 3, 4)))
+    assert session.repository().dataset_extent("/data/numeric").shape == (2, 3, 4)
+    np.testing.assert_array_equal(
+        session.repository()
+        .read_dataset_page(
+            "/data/numeric",
+            default_dataset_slice((2, 3, 4)),
+        )
+        .values,
+        original_values[0, :3, :4],
+    )
+    assert len(tuple(tmp_path.glob("*.h5viewer-resize-undo"))) == 1
+
+    session.undo()
+    assert session.repository().dataset_extent("/data/numeric").shape == (3, 4, 5)
+    with h5py.File(session.active_path, "r") as restored:
+        np.testing.assert_array_equal(restored["/data/numeric"][...], original_values)
+    assert not tuple(tmp_path.glob("*.h5viewer-resize-undo"))
+
+    session.redo()
+    assert session.repository().dataset_extent("/numeric_alias").shape == (2, 3, 4)
+    assert len(tuple(tmp_path.glob("*.h5viewer-resize-undo"))) == 1
+    result = session.save(create_backup=False)
+    assert result is not None
+    assert not tuple(tmp_path.glob("*.h5viewer-resize-undo"))
+    with h5py.File(path, "r") as saved:
+        assert saved["/data/numeric"].shape == (2, 3, 4)
 
 
 def test_link_creation_and_deletion_are_undoable(sample_hdf5: Path, tmp_path: Path) -> None:

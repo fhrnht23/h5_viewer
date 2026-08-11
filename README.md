@@ -20,7 +20,7 @@ H5 Viewer — кроссплатформенное двухпанельное de
 - показывать line plot и heatmap текущей страницы через опциональный `pyqtgraph`;
 - редактировать поддерживаемые scalar values и атрибуты в безопасной рабочей копии;
 - создавать группы и datasets с настройкой dtype, shape, chunks, compression и fill value;
-- безопасно расширять chunked datasets в пределах maxshape;
+- безопасно изменять размер chunked datasets; уменьшение защищено полным дисковым снимком для undo;
 - создавать hard/soft/external links, безопасно удалять и переименовывать их;
 - копировать (`F5`) и перемещать (`F6`) объекты между панелями;
 - выполнять undo/redo, Save, Save As и Discard;

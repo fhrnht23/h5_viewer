@@ -371,6 +371,16 @@ class DatasetExtent:
 
 
 @dataclass(frozen=True, slots=True)
+class DatasetShrinkSnapshot:
+    """Полный дисковый снимок рабочей копии перед уменьшением dataset."""
+
+    dataset_path: str
+    original_shape: tuple[int, ...]
+    shrunken_shape: tuple[int, ...]
+    backup_path: Path
+
+
+@dataclass(frozen=True, slots=True)
 class ValidationReport:
     """Результат структурной проверки HDF5-файла."""
 

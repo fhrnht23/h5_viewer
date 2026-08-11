@@ -324,7 +324,7 @@ class DatasetCreationDialog(QDialog):
 
 
 class ResizeDatasetDialog(QDialog):
-    """Запрашивает новый размер расширяемого dataset."""
+    """Запрашивает новый размер блочного dataset."""
 
     def __init__(self, extent: DatasetExtent, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -344,7 +344,7 @@ class ResizeDatasetDialog(QDialog):
         notice = QLabel(
             tr(
                 "DatasetDialog",
-                "Only expansion is allowed; shrinking could irreversibly discard data.",
+                "Shrinking discards data immediately; a full disk snapshot is created for undo.",
             ),
             self,
         )
@@ -385,8 +385,6 @@ class ResizeDatasetDialog(QDialog):
             raise ValueError("The new shape must have the same rank")
         if new_shape == self._extent.shape:
             raise ValueError("Enter a shape different from the current shape")
-        if any(new < current for current, new in zip(self._extent.shape, new_shape, strict=True)):
-            raise ValueError("Shrinking datasets is not supported")
         for value, maximum in zip(new_shape, self._extent.maxshape, strict=True):
             if maximum is not None and value > maximum:
                 raise ValueError("The new shape exceeds maximum shape")

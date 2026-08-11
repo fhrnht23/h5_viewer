@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shutil
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -16,6 +18,7 @@ import numpy as np
 from h5viewer.domain.errors import (
     FileOpenError,
     H5ViewerError,
+    InsufficientSpaceError,
     ObjectNotFoundError,
     UnsupportedEditError,
     ValidationError,
@@ -26,6 +29,7 @@ from h5viewer.domain.models import (
     DatasetCreationOptions,
     DatasetExtent,
     DatasetPage,
+    DatasetShrinkSnapshot,
     DatasetSlice,
     DeletedLinkSnapshot,
     DimensionScaleInfo,
@@ -47,6 +51,7 @@ from h5viewer.domain.models import (
 _VALUE_PREVIEW_ITEMS = 24
 _REFERENCE_PREVIEW_ITEMS = 64
 _VIRTUAL_MAPPING_PREVIEW_ITEMS = 256
+_SNAPSHOT_SPACE_MARGIN = 16 * 1024 * 1024
 
 
 class H5pyRepository:
@@ -481,6 +486,66 @@ class H5pyRepository:
             except (TypeError, ValueError) as exc:
                 raise UnsupportedEditError(f"Cannot resize dataset: {exc}") from exc
             h5_file.flush()
+
+    def shrink_dataset_with_snapshot(
+        self,
+        path: str,
+        new_shape: tuple[int, ...],
+    ) -> DatasetShrinkSnapshot:
+        """Создать полную копию рабочего файла и выполнить необратимое уменьшение."""
+        if not self._writable:
+            raise UnsupportedEditError("Repository is read-only")
+        normalized = normalize_hdf5_path(path)
+        target = tuple(int(value) for value in new_shape)
+        extent = self.dataset_extent(normalized)
+        if len(target) != len(extent.shape) or not any(
+            new < old for old, new in zip(extent.shape, target, strict=True)
+        ):
+            raise UnsupportedEditError("The new shape does not shrink the dataset")
+
+        required = self._path.stat().st_size + _SNAPSHOT_SPACE_MARGIN
+        free = shutil.disk_usage(self._path.parent).free
+        if free < required:
+            raise InsufficientSpaceError(
+                f"Dataset shrinking requires about {required} bytes for undo; "
+                f"only {free} bytes are free"
+            )
+
+        backup_path = self._path.with_name(
+            f".{self._path.name}.{uuid.uuid4().hex}.h5viewer-resize-undo"
+        )
+        try:
+            shutil.copy2(self._path, backup_path)
+            _fsync_file(backup_path)
+            self.resize_dataset(normalized, target, allow_shrink=True)
+        except Exception:
+            backup_path.unlink(missing_ok=True)
+            raise
+        return DatasetShrinkSnapshot(normalized, extent.shape, target, backup_path)
+
+    def restore_dataset_shrink_snapshot(self, snapshot: DatasetShrinkSnapshot) -> None:
+        """Проверить снимок и атомарно вернуть его на место рабочей копии."""
+        if not self._writable:
+            raise UnsupportedEditError("Repository is read-only")
+        if not snapshot.backup_path.is_file():
+            raise FileOpenError(f"Dataset undo snapshot is missing: {snapshot.backup_path}")
+        current = self.dataset_extent(snapshot.dataset_path)
+        if current.shape != snapshot.shrunken_shape:
+            raise UnsupportedEditError(
+                "Cannot restore dataset snapshot because its current shape has changed"
+            )
+        try:
+            with h5py.File(snapshot.backup_path, "r") as backup:
+                dataset = _require_dataset(backup, snapshot.dataset_path)
+                restored_shape = tuple(int(value) for value in dataset.shape)
+                if restored_shape != snapshot.original_shape:
+                    raise ValidationError("Dataset undo snapshot has an unexpected shape")
+            os.replace(snapshot.backup_path, self._path)
+            _fsync_directory(self._path.parent)
+        except H5ViewerError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise FileOpenError(f"Cannot restore dataset undo snapshot: {exc}") from exc
 
     def create_link(
         self,
@@ -1400,3 +1465,26 @@ def _parse_json_or_text(text: str) -> Any:
 def _validate_link_name(name: str) -> None:
     if not name or "/" in name or "\x00" in name:
         raise UnsupportedEditError("Link name must be non-empty and cannot contain '/' or NUL")
+
+
+def _fsync_file(path: Path) -> None:
+    """Гарантировать запись готового снимка на носитель перед изменением файла."""
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    """Синхронизировать атомарную замену каталога там, где это поддерживается."""
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        # Некоторые файловые системы не поддерживают fsync для каталогов.
+        return
+    finally:
+        os.close(descriptor)

@@ -10,6 +10,7 @@ from h5viewer.domain.models import (
     DatasetCreationOptions,
     DatasetExtent,
     DatasetPage,
+    DatasetShrinkSnapshot,
     DatasetSlice,
     DeletedLinkSnapshot,
     LinkCreationOptions,
@@ -82,6 +83,16 @@ class HdfRepository(Protocol):
         allow_shrink: bool = False,
     ) -> None:
         """Изменить размеры chunked dataset с явным контролем уменьшения."""
+
+    def shrink_dataset_with_snapshot(
+        self,
+        path: str,
+        new_shape: tuple[int, ...],
+    ) -> DatasetShrinkSnapshot:
+        """Уменьшить dataset после создания полного дискового снимка файла."""
+
+    def restore_dataset_shrink_snapshot(self, snapshot: DatasetShrinkSnapshot) -> None:
+        """Атомарно восстановить рабочий файл из снимка уменьшения."""
 
     def create_link(
         self,

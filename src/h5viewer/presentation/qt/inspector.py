@@ -858,7 +858,7 @@ class ObjectInspector(QTabWidget):
             self.content_changed.emit(self._session)
 
     def _resize_dataset(self) -> None:
-        """Расширить выбранный dataset обратимой командой."""
+        """Изменить размер выбранного dataset обратимой командой."""
         if self._session is None or self._link is None:
             return
         try:
@@ -873,20 +873,24 @@ class ObjectInspector(QTabWidget):
                 tr("DatasetDialog", "Only chunked datasets can be resized"),
             )
             return
-        if all(
-            maximum is not None and maximum <= current
-            for current, maximum in zip(extent.shape, extent.maxshape, strict=True)
-        ):
-            QMessageBox.information(
-                self,
-                tr("Dialog", "Unsupported edit"),
-                tr("DatasetDialog", "Dataset has no expandable axes"),
-            )
-            return
         dialog = ResizeDatasetDialog(extent, self)
         if dialog.exec() != ResizeDatasetDialog.DialogCode.Accepted:
             return
         new_shape = dialog.new_shape()
+        if any(new < current for current, new in zip(extent.shape, new_shape, strict=True)):
+            answer = QMessageBox.warning(
+                self,
+                tr("Dialog", "Confirm"),
+                tr(
+                    "DatasetDialog",
+                    "Shrinking discards data outside the new shape. The undo snapshot may "
+                    "require disk space equal to the working file. Continue?",
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer is not QMessageBox.StandardButton.Yes:
+                return
         if not self._ensure_editing(self._session):
             return
         try:

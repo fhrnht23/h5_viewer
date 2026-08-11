@@ -11,6 +11,7 @@ from typing import Any
 from h5viewer.domain.errors import ObjectNotFoundError
 from h5viewer.domain.models import (
     DatasetCreationOptions,
+    DatasetShrinkSnapshot,
     DeletedLinkSnapshot,
     LinkCreationOptions,
     join_hdf5_path,
@@ -150,23 +151,39 @@ class CreateDatasetCommand(EditCommand):
 
 @dataclass(slots=True)
 class ResizeDatasetCommand(EditCommand):
-    """Безопасно расширить набор данных с возможностью точного undo."""
+    """Изменить размер dataset с точным undo, включая дисковый снимок при уменьшении."""
 
     path: str
     new_shape: tuple[int, ...]
     label: str = "Resize dataset"
     _old_shape: tuple[int, ...] | None = field(default=None, init=False, repr=False)
+    _snapshot: DatasetShrinkSnapshot | None = field(default=None, init=False, repr=False)
 
     def apply(self, repository: HdfRepository) -> None:
         if self._old_shape is None:
             self._old_shape = repository.dataset_extent(self.path).shape
-        repository.resize_dataset(self.path, self.new_shape)
+        shrinking = len(self._old_shape) == len(self.new_shape) and any(
+            new < old for old, new in zip(self._old_shape, self.new_shape, strict=True)
+        )
+        if shrinking:
+            self._snapshot = repository.shrink_dataset_with_snapshot(self.path, self.new_shape)
+        else:
+            repository.resize_dataset(self.path, self.new_shape)
 
     def revert(self, repository: HdfRepository) -> None:
         if self._old_shape is None:
             raise RuntimeError("Исходный размер dataset не был сохранён")
-        # Стек команд гарантирует, что изменения в добавленной области уже отменены.
-        repository.resize_dataset(self.path, self._old_shape, allow_shrink=True)
+        if self._snapshot is not None:
+            repository.restore_dataset_shrink_snapshot(self._snapshot)
+            # Снимок перемещён на место рабочей копии; при redo он будет создан заново.
+            self._snapshot = None
+        else:
+            # Стек команд гарантирует, что изменения в добавленной области уже отменены.
+            repository.resize_dataset(self.path, self._old_shape, allow_shrink=True)
+
+    def dispose(self) -> None:
+        if self._snapshot is not None:
+            self._snapshot.backup_path.unlink(missing_ok=True)
 
 
 @dataclass(slots=True)

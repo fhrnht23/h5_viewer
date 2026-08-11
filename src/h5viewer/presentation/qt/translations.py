@@ -278,8 +278,8 @@ _RU: dict[str, str] = {
     "Fill value": "Значение заполнения",
     "Current shape": "Текущая форма",
     "New shape": "Новая форма",
-    "Only expansion is allowed; shrinking could irreversibly discard data.": (
-        "Разрешено только расширение: уменьшение может необратимо удалить данные."
+    "Shrinking discards data immediately; a full disk snapshot is created for undo.": (
+        "Уменьшение сразу удаляет данные; для отмены создаётся полный дисковый снимок."
     ),
     "Enter a valid dataset name": "Введите корректное имя набора данных",
     "Shape and maximum shape must have the same rank": (
@@ -301,10 +301,15 @@ _RU: dict[str, str] = {
     "Only chunked datasets can be resized": (
         "Изменять размер можно только у блочных наборов данных"
     ),
-    "Dataset has no expandable axes": "У набора данных нет расширяемых осей",
     "The new shape must have the same rank": "Новая форма должна иметь тот же ранг",
     "Enter a shape different from the current shape": ("Введите форму, отличающуюся от текущей"),
-    "Shrinking datasets is not supported": "Уменьшение наборов данных не поддерживается",
+    (
+        "Shrinking discards data outside the new shape. The undo snapshot may require disk "
+        "space equal to the working file. Continue?"
+    ): (
+        "Уменьшение удалит данные за пределами новой формы. Снимку для отмены может потребоваться "
+        "столько же места, сколько занимает рабочий файл. Продолжить?"
+    ),
     "The new shape exceeds maximum shape": "Новая форма превышает максимальную",
     "Dimensions must be non-negative integers separated by commas": (
         "Размеры должны быть неотрицательными целыми числами через запятую"
