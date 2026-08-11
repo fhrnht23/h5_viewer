@@ -18,6 +18,7 @@ from h5viewer.domain.models import (
     LinkKind,
     LinkRef,
     ObjectKind,
+    normalize_hdf5_path,
     scalar_to_text,
 )
 from h5viewer.presentation.qt.icons import object_icon
@@ -283,6 +284,161 @@ class HdfTreeModel(QAbstractItemModel):
         if link.object_kind is not ObjectKind.DATASET:
             return ""
         return "NULL" if link.shape is None else str(link.shape)
+
+
+class HdfFolderModel(QAbstractTableModel):
+    """Постраничная плоская модель содержимого одной HDF5-группы."""
+
+    PathRole = HdfTreeModel.PathRole
+    LinkRole = HdfTreeModel.LinkRole
+    _PAGE_SIZE = 200
+
+    def __init__(
+        self,
+        session: DocumentSession,
+        group_path: str = "/",
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self._session = session
+        self._group_path = "/"
+        self._links: list[LinkRef] = []
+        self._total_children = 0
+        self.set_group(group_path)
+
+    @property
+    def group_path(self) -> str:
+        """Вернуть путь отображаемой группы."""
+        return self._group_path
+
+    def set_group(self, path: str) -> None:
+        """Перейти в группу и загрузить первую ограниченную страницу ссылок."""
+        normalized = normalize_hdf5_path(path)
+        repository = self._session.repository()
+        total = repository.child_count(normalized)
+        links = repository.list_children(normalized, 0, min(self._PAGE_SIZE, total))
+        self.beginResetModel()
+        self._group_path = normalized
+        self._links = links
+        self._total_children = total
+        self.endResetModel()
+
+    def refresh(self) -> None:
+        """Повторно прочитать текущую группу после изменения документа."""
+        self.set_group(self._group_path)
+
+    def update_dataset_shape(
+        self,
+        path: str,
+        object_token: str | None,
+        shape: tuple[int, ...],
+    ) -> None:
+        """Обновить форму dataset в загруженных строках текущей группы."""
+        for row, link in enumerate(self._links):
+            same_object = bool(object_token and link.object_token == object_token)
+            if link.path != path and not same_object:
+                continue
+            self._links[row] = replace(link, shape=shape)
+            index = self.index(row, 2)
+            self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.DisplayRole)])
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        del parent
+        return 5
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self._links)
+
+    def data(self, index: QModelIndex, role: int = int(Qt.ItemDataRole.DisplayRole)) -> Any:
+        if not index.isValid() or index.row() >= len(self._links):
+            return None
+        link = self._links[index.row()]
+        if role == int(Qt.ItemDataRole.DisplayRole):
+            values = (
+                HdfTreeModel._display_name(TreeNode(link)),
+                HdfTreeModel._display_type(link),
+                HdfTreeModel._display_shape(link),
+                link.dtype or "",
+                link.storage or "",
+            )
+            return values[index.column()]
+        if role == int(Qt.ItemDataRole.ToolTipRole):
+            lines = [link.path, f"{tr('Tree', 'Link kind')}: {tr('Type', link.link_kind.value)}"]
+            if link.target_path:
+                lines.append(f"{tr('Tree', 'Target')}: {link.target_path}")
+            if link.external_file:
+                lines.append(f"{tr('Tree', 'External file')}: {link.external_file}")
+            if link.object_token:
+                lines.append(f"{tr('Tree', 'Object token')}: {link.object_token}")
+            if link.error:
+                lines.append(link.error)
+            return "\n".join(lines)
+        if role == int(Qt.ItemDataRole.DecorationRole) and index.column() == 0:
+            if link.object_kind is ObjectKind.BROKEN_LINK:
+                return object_icon("warning")
+            if link.link_kind in {LinkKind.SOFT, LinkKind.EXTERNAL}:
+                return object_icon("link")
+            icon_names = {
+                ObjectKind.GROUP: "folder",
+                ObjectKind.DATASET: "dataset",
+                ObjectKind.NAMED_DATATYPE: "datatype",
+            }
+            return object_icon(icon_names.get(link.object_kind, "file"))
+        if role == int(Qt.ItemDataRole.ForegroundRole):
+            if link.object_kind is ObjectKind.BROKEN_LINK:
+                return QColor("#d1495b")
+            if link.link_kind in {LinkKind.SOFT, LinkKind.EXTERNAL}:
+                return QColor("#8a6d3b")
+        if role == int(Qt.ItemDataRole.FontRole) and link.object_kind is ObjectKind.GROUP:
+            font = QFont()
+            font.setBold(True)
+            return font
+        if role == self.PathRole:
+            return link.path
+        if role == self.LinkRole:
+            return link
+        return None
+
+    def headerData(  # noqa: N802
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = int(Qt.ItemDataRole.DisplayRole),
+    ) -> Any:
+        if orientation is Qt.Orientation.Horizontal and role == int(Qt.ItemDataRole.DisplayRole):
+            return (
+                tr("Tree", "Name"),
+                tr("Tree", "Type"),
+                tr("Tree", "Shape"),
+                tr("Tree", "Dtype"),
+                tr("Tree", "Storage"),
+            )[section]
+        return None
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def canFetchMore(self, parent: QModelIndex = QModelIndex()) -> bool:  # noqa: N802
+        return not parent.isValid() and len(self._links) < self._total_children
+
+    def fetchMore(self, parent: QModelIndex = QModelIndex()) -> None:  # noqa: N802
+        if not self.canFetchMore(parent):
+            return
+        offset = len(self._links)
+        count = min(self._PAGE_SIZE, self._total_children - offset)
+        try:
+            links = self._session.repository().list_children(self._group_path, offset, count)
+        except H5ViewerError:
+            self._total_children = offset
+            return
+        if not links:
+            self._total_children = offset
+            return
+        self.beginInsertRows(QModelIndex(), offset, offset + len(links) - 1)
+        self._links.extend(links)
+        self.endInsertRows()
 
 
 class DatasetTableModel(QAbstractTableModel):

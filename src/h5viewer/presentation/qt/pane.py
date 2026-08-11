@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QSortFilterProxyModel, Qt, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QObject, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -34,12 +36,12 @@ from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import LinkRef, ObjectKind, split_hdf5_path
 from h5viewer.presentation.qt.dialogs import DatasetCreationDialog, LinkCreationDialog
 from h5viewer.presentation.qt.icons import interface_icon, object_icon
-from h5viewer.presentation.qt.models import HdfTreeModel
+from h5viewer.presentation.qt.models import HdfFolderModel, HdfTreeModel
 from h5viewer.presentation.qt.translations import tr
 
 
 class ObjectTreeView(QTreeView):
-    """Дерево, резервирующее Enter для открытия инспектора объекта."""
+    """Представление структуры, резервирующее Enter для активации объекта."""
 
     open_requested = Signal()
 
@@ -71,6 +73,8 @@ class BrowserPane(QWidget):
         self._documents: list[DocumentSession] = []
         self._session: DocumentSession | None = None
         self._model: HdfTreeModel | None = None
+        self._folder_model: HdfFolderModel | None = None
+        self._navigation_mode = "tree"
         self._proxy = QSortFilterProxyModel(self)
         self._empty_model = QStandardItemModel(self)
         self._proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -85,6 +89,11 @@ class BrowserPane(QWidget):
     @property
     def session(self) -> DocumentSession | None:
         return self._session
+
+    @property
+    def navigation_mode(self) -> str:
+        """Вернуть активный режим навигации: дерево или папки."""
+        return self._navigation_mode
 
     def _create_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -105,8 +114,35 @@ class BrowserPane(QWidget):
         self.root_button.setObjectName("rootButton")
         self.root_button.setFixedWidth(36)
         self.root_button.clicked.connect(self._select_root)
+        self.up_button = QToolButton(self)
+        self.up_button.setObjectName("paneNavigationButton")
+        self.up_button.setIcon(interface_icon("up"))
+        self.up_button.setFixedSize(34, 34)
+        self.up_button.setVisible(False)
+        self.up_button.clicked.connect(self._go_up)
         path_row.addWidget(self.root_button)
+        path_row.addWidget(self.up_button)
         path_row.addWidget(self.path_edit, 1)
+
+        self.tree_mode_button = QToolButton(self)
+        self.tree_mode_button.setObjectName("paneNavigationButton")
+        self.tree_mode_button.setIcon(interface_icon("tree"))
+        self.tree_mode_button.setCheckable(True)
+        self.tree_mode_button.setChecked(True)
+        self.tree_mode_button.setFixedSize(34, 34)
+        self.tree_mode_button.clicked.connect(lambda: self.set_navigation_mode("tree"))
+        self.folder_mode_button = QToolButton(self)
+        self.folder_mode_button.setObjectName("paneNavigationButton")
+        self.folder_mode_button.setIcon(interface_icon("folder"))
+        self.folder_mode_button.setCheckable(True)
+        self.folder_mode_button.setFixedSize(34, 34)
+        self.folder_mode_button.clicked.connect(lambda: self.set_navigation_mode("folders"))
+        self.navigation_mode_group = QButtonGroup(self)
+        self.navigation_mode_group.setExclusive(True)
+        self.navigation_mode_group.addButton(self.tree_mode_button)
+        self.navigation_mode_group.addButton(self.folder_mode_button)
+        path_row.addWidget(self.tree_mode_button)
+        path_row.addWidget(self.folder_mode_button)
         layout.addLayout(path_row)
 
         self.filter_edit = QLineEdit(self)
@@ -137,7 +173,7 @@ class BrowserPane(QWidget):
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.clicked.connect(self._tree_clicked)
         self.tree.doubleClicked.connect(self._tree_double_clicked)
-        self.tree.open_requested.connect(self._open_current_link)
+        self.tree.open_requested.connect(self._activate_current_link)
         self.tree.setModel(self._proxy)
         layout.addWidget(self.tree, 1)
 
@@ -145,7 +181,10 @@ class BrowserPane(QWidget):
         for widget in (
             self.document_combo,
             self.root_button,
+            self.up_button,
             self.path_edit,
+            self.tree_mode_button,
+            self.folder_mode_button,
             self.filter_edit,
             self.tree,
             self.tree.viewport(),
@@ -161,8 +200,16 @@ class BrowserPane(QWidget):
     def retranslate_ui(self) -> None:
         """Обновить локализуемые подписи панели."""
         self.filter_edit.setPlaceholderText(tr("Pane", "Filter objects…"))
+        self.root_button.setToolTip(tr("Pane", "Go to root group"))
+        self.up_button.setToolTip(tr("Pane", "Go to parent group"))
+        self.tree_mode_button.setToolTip(tr("Pane", "Tree view"))
+        self.tree_mode_button.setAccessibleName(tr("Pane", "Tree view"))
+        self.folder_mode_button.setToolTip(tr("Pane", "Folder view"))
+        self.folder_mode_button.setAccessibleName(tr("Pane", "Folder view"))
         if self._model is not None:
             self._model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 4)
+        if self._folder_model is not None:
+            self._folder_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 4)
 
     def set_documents(
         self,
@@ -196,6 +243,9 @@ class BrowserPane(QWidget):
         for index in range(self.document_combo.count()):
             self.document_combo.setItemIcon(index, object_icon("file"))
         self.filter_icon_action.setIcon(interface_icon("search"))
+        self.up_button.setIcon(interface_icon("up"))
+        self.tree_mode_button.setIcon(interface_icon("tree"))
+        self.folder_mode_button.setIcon(interface_icon("folder"))
         self.tree.viewport().update()
 
     def select_document(self, session: DocumentSession) -> None:
@@ -206,22 +256,30 @@ class BrowserPane(QWidget):
 
     def refresh(self) -> None:
         """Перечитать активную структуру после команды или сохранения."""
-        if self._model is None:
+        if self._model is None or self._folder_model is None:
             return
         try:
             self._model.refresh()
-            self.tree.expandToDepth(0)
-            self._select_root()
+            if self._navigation_mode == "folders":
+                group_path = self._refresh_folder_with_fallback()
+                self.path_edit.setText(group_path)
+                self.up_button.setEnabled(group_path != "/")
+                assert self._session is not None
+                group = self._session.repository().link(group_path)
+                self.object_selected.emit(self._session, group)
+            else:
+                self.tree.expandToDepth(0)
+                self._select_root()
         except H5ViewerError as exc:
             self.status_message.emit(str(exc))
 
     def current_link(self) -> LinkRef | None:
         """Вернуть выбранную ссылку исходной модели."""
         index = self.tree.currentIndex()
-        if not index.isValid() or self._model is None:
+        if not index.isValid() or self._proxy.sourceModel() is None:
             return None
         source = self._proxy.mapToSource(index.siblingAtColumn(0))
-        value = self._model.data(source, HdfTreeModel.LinkRole)
+        value = self._proxy.sourceModel().data(source, HdfTreeModel.LinkRole)
         return value if isinstance(value, LinkRef) else None
 
     def update_dataset_shape(
@@ -234,23 +292,27 @@ class BrowserPane(QWidget):
         """Обновить форму dataset без сброса раскрытия дерева и выбора."""
         if self._session is session and self._model is not None:
             self._model.update_dataset_shape(path, object_token, shape)
+            if self._folder_model is not None:
+                self._folder_model.update_dataset_shape(path, object_token, shape)
 
     def _select_document_index(self, index: int) -> None:
         if index < 0 or index >= len(self._documents):
             self._session = None
             self._model = None
+            self._folder_model = None
             self._proxy.setSourceModel(self._empty_model)
             self.path_edit.setText("")
+            self.up_button.setEnabled(False)
             return
         self._session = self._documents[index]
         try:
             self._model = HdfTreeModel(self._session, self)
+            self._folder_model = HdfFolderModel(self._session, "/", self)
         except H5ViewerError as exc:
             QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
             return
-        self._proxy.setSourceModel(self._model)
+        self._apply_navigation_model()
         self._resize_tree_columns()
-        self.tree.expandToDepth(0)
         self.document_changed.emit(self._session)
         self._select_root()
 
@@ -262,10 +324,64 @@ class BrowserPane(QWidget):
         header.resizeSection(2, 85)
         header.resizeSection(3, 105)
 
+    def set_navigation_mode(self, mode: str) -> None:
+        """Переключить панель между деревом и содержимым одной группы."""
+        if mode not in {"tree", "folders"}:
+            raise ValueError(f"Unknown navigation mode: {mode}")
+        if mode == self._navigation_mode:
+            return
+        selected = self.current_link()
+        self._navigation_mode = mode
+        self.tree_mode_button.setChecked(mode == "tree")
+        self.folder_mode_button.setChecked(mode == "folders")
+        if self._session is None or self._model is None or self._folder_model is None:
+            self._apply_navigation_model()
+            return
+        if mode == "folders":
+            group_path = "/"
+            if selected is not None:
+                group_path = selected.path if selected.can_expand else selected.parent_path
+            try:
+                self._folder_model.set_group(group_path)
+            except H5ViewerError as exc:
+                self.status_message.emit(str(exc))
+                self._folder_model.set_group("/")
+            self._apply_navigation_model()
+            self._select_folder_group()
+            return
+        self._apply_navigation_model()
+        self._select_root()
+
+    def _apply_navigation_model(self) -> None:
+        """Подключить к представлению модель выбранного режима."""
+        is_folder_mode = self._navigation_mode == "folders"
+        source_model = self._folder_model if is_folder_mode else self._model
+        self._proxy.setRecursiveFilteringEnabled(not is_folder_mode)
+        self._proxy.setSourceModel(source_model or self._empty_model)
+        self.tree.setRootIsDecorated(not is_folder_mode)
+        self.tree.setItemsExpandable(not is_folder_mode)
+        self.tree.setIndentation(0 if is_folder_mode else 20)
+        self.up_button.setVisible(is_folder_mode)
+        self.tree.setCurrentIndex(QModelIndex())
+        if not is_folder_mode:
+            self.tree.expandToDepth(0)
+        self._resize_tree_columns()
+
     def _select_root(self) -> None:
         if self._session is None:
             return
+        if self._navigation_mode == "folders":
+            if self._folder_model is None:
+                return
+            try:
+                self._folder_model.set_group("/")
+            except H5ViewerError as exc:
+                self.status_message.emit(str(exc))
+                return
+            self._select_folder_group()
+            return
         self.path_edit.setText("/")
+        self.up_button.setEnabled(False)
         try:
             root = self._session.repository().root()
         except H5ViewerError as exc:
@@ -273,26 +389,87 @@ class BrowserPane(QWidget):
             return
         self.object_selected.emit(self._session, root)
 
+    def _select_folder_group(self) -> None:
+        """Показать путь текущей группы и сделать её активным объектом."""
+        if self._session is None or self._folder_model is None:
+            return
+        path = self._folder_model.group_path
+        self.path_edit.setText(path)
+        self.up_button.setEnabled(path != "/")
+        self.tree.setCurrentIndex(QModelIndex())
+        try:
+            link = self._session.repository().link(path)
+        except H5ViewerError as exc:
+            self.status_message.emit(str(exc))
+            return
+        self.object_selected.emit(self._session, link)
+
+    def _go_up(self) -> None:
+        """Перейти в родительскую группу в режиме папок."""
+        if self._navigation_mode != "folders" or self._folder_model is None:
+            return
+        current = self._folder_model.group_path
+        if current == "/":
+            return
+        parent_path, _name = split_hdf5_path(current)
+        self._navigate_to_group(parent_path)
+
+    def _navigate_to_group(self, path: str) -> None:
+        """Загрузить непосредственное содержимое указанной группы."""
+        if self._folder_model is None:
+            return
+        try:
+            self._folder_model.set_group(path)
+        except H5ViewerError as exc:
+            self.status_message.emit(str(exc))
+            return
+        self._select_folder_group()
+
+    def _refresh_folder_with_fallback(self) -> str:
+        """Обновить папку или подняться до ближайшей сохранившейся группы."""
+        assert self._folder_model is not None
+        candidate = self._folder_model.group_path
+        while True:
+            try:
+                self._folder_model.set_group(candidate)
+                return candidate
+            except H5ViewerError:
+                if candidate == "/":
+                    raise
+                candidate, _name = split_hdf5_path(candidate)
+
     def _tree_clicked(self, proxy_index: Any) -> None:
         if self._model is None or self._session is None:
             return
         source = self._proxy.mapToSource(proxy_index.siblingAtColumn(0))
-        link = self._model.data(source, HdfTreeModel.LinkRole)
+        link = self._proxy.sourceModel().data(source, HdfTreeModel.LinkRole)
         if isinstance(link, LinkRef):
-            self.path_edit.setText(link.path)
+            if self._navigation_mode == "tree":
+                self.path_edit.setText(link.path)
             self.object_selected.emit(self._session, link)
 
     def _tree_double_clicked(self, proxy_index: Any) -> None:
         if not proxy_index.isValid():
             return
         link = self.current_link()
-        if link is not None and link.object_kind is not ObjectKind.GROUP:
+        if self._navigation_mode == "folders" and link is not None and link.can_expand:
+            self._navigate_to_group(link.path)
+            return
+        if link is not None and not link.can_expand:
             self._open_current_link()
             return
         if self.tree.isExpanded(proxy_index):
             self.tree.collapse(proxy_index)
         else:
             self.tree.expand(proxy_index)
+
+    def _activate_current_link(self) -> None:
+        """Войти в группу режима папок либо открыть инспектор выбранного объекта."""
+        link = self.current_link()
+        if self._navigation_mode == "folders" and link is not None and link.can_expand:
+            self._navigate_to_group(link.path)
+            return
+        self._open_current_link()
 
     def _open_current_link(self) -> None:
         """Открыть выбранный объект в отдельном инспекторе."""
@@ -392,10 +569,11 @@ class BrowserPane(QWidget):
         self.refresh()
         self.content_changed.emit(self._session)
 
-    @staticmethod
-    def _target_group(selected: LinkRef | None) -> str:
+    def _target_group(self, selected: LinkRef | None) -> str:
         """Выбрать группу назначения по текущему объекту панели."""
         if selected is None:
+            if self._navigation_mode == "folders" and self._folder_model is not None:
+                return self._folder_model.group_path
             return "/"
         return selected.path if selected.object_kind is ObjectKind.GROUP else selected.parent_path
 

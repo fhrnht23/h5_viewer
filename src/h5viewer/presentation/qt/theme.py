@@ -434,6 +434,28 @@ class ThemeManager(QObject):
                 font-weight: 700;
                 padding: 3px;
             }}
+            QToolButton#paneNavigationButton {{
+                background: {colors.surface_alt};
+                border: 1px solid {colors.border};
+                border-radius: 7px;
+                color: {colors.text_muted};
+                padding: 5px;
+            }}
+            QToolButton#paneNavigationButton:hover {{
+                background: {colors.surface_hover};
+                border-color: {colors.text_muted};
+            }}
+            QToolButton#paneNavigationButton:pressed,
+            QToolButton#paneNavigationButton:checked {{
+                background: {colors.accent_soft};
+                border-color: {colors.accent};
+                color: {colors.accent};
+            }}
+            QToolButton#paneNavigationButton:disabled {{
+                background: {colors.surface_alt};
+                border-color: {colors.border};
+                color: {colors.text_disabled};
+            }}
             QTreeView#objectTree, QTableView, QTableWidget, QTextEdit {{
                 background: {colors.surface};
                 alternate-background-color: {colors.surface_alt};

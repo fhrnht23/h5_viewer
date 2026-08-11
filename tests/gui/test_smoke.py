@@ -34,6 +34,7 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
     assert language.language == "ru"
     assert window.open_action.text() == "Открыть…"
     assert window.appearance_settings_action.text() == "Настройки оформления…"
+    assert window.left_pane.folder_mode_button.toolTip() == "Папки"
     invoked: list[bool] = []
     registration = window.add_tools_action(
         "org.example.test",
@@ -45,6 +46,7 @@ def test_main_window_defaults_to_russian(qtbot: object, qapp: object) -> None:
     assert plugin_action.text() == "Команда плагина"
     language.set_language("en")
     assert window.open_action.text() == "Open…"
+    assert window.left_pane.folder_mode_button.toolTip() == "Folder view"
     assert plugin_action.text() == "Plugin action"
     plugin_action.trigger()
     assert invoked == [True]
@@ -160,6 +162,64 @@ def test_enter_opens_separate_inspector_and_panels_use_full_window(
     )
     assert window.left_pane.property("activePane") is False
     assert window.right_pane.property("activePane") is True
+
+
+def test_folder_navigation_shows_only_current_group(
+    qtbot: object, qapp: object, sample_hdf5: Path
+) -> None:
+    QSettings().clear()
+    language = LanguageManager(qapp)  # type: ignore[arg-type]
+    language.load()
+    theme = ThemeManager(qapp)  # type: ignore[arg-type]
+    window = MainWindow(language, theme)
+    qtbot.addWidget(window)  # type: ignore[attr-defined]
+    window.show()
+    document = window._open_path(sample_hdf5)
+    assert document is not None
+
+    pane = window.left_pane
+    pane.set_navigation_mode("folders")
+    assert pane.navigation_mode == "folders"
+    assert pane.folder_mode_button.isChecked()
+    assert pane.path_edit.text() == "/"
+    assert window.right_pane.navigation_mode == "tree"
+
+    data_index = next(
+        pane._proxy.index(row, 0)
+        for row in range(pane._proxy.rowCount())
+        if pane._proxy.data(pane._proxy.index(row, 0)) == "data"
+    )
+    pane.tree.setCurrentIndex(data_index)
+    pane.tree.setFocus()
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+
+    assert pane.path_edit.text() == "/data"
+    assert pane._folder_model is not None
+    assert pane._folder_model.group_path == "/data"
+    assert "Enter: открыть группу" in window.statusBar().currentMessage()
+    visible_names = {
+        pane._proxy.data(pane._proxy.index(row, 0)) for row in range(pane._proxy.rowCount())
+    }
+    assert "numeric" in visible_names
+    assert "numeric_alias" not in visible_names
+    assert not window.inspector_window.isVisible()
+
+    numeric_index = next(
+        pane._proxy.index(row, 0)
+        for row in range(pane._proxy.rowCount())
+        if pane._proxy.data(pane._proxy.index(row, 0)) == "numeric"
+    )
+    pane.tree.setCurrentIndex(numeric_index)
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+    assert window.inspector_window.isVisible()
+    assert window._active_link is not None
+    assert window._active_link.path == "/data/numeric"
+
+    qtbot.mouseClick(pane.up_button, Qt.MouseButton.LeftButton)  # type: ignore[attr-defined]
+    assert pane.path_edit.text() == "/"
+    pane.set_navigation_mode("tree")
+    assert pane.tree_mode_button.isChecked()
+    assert pane.path_edit.text() == "/"
 
 
 def test_inspector_shows_rich_metadata_and_opens_reference(

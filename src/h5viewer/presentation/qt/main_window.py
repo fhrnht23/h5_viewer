@@ -937,7 +937,14 @@ class MainWindow(QMainWindow):
             parts.append(f"link={tr('Type', link.link_kind.value)}")
         if link.child_count is not None:
             parts.append(f"{tr('MainWindow', 'Objects')}: {link.child_count}")
-        parts.append(tr("MainWindow", "Enter: open inspector"))
+        if (
+            self._active_pane is not None
+            and self._active_pane.navigation_mode == "folders"
+            and link.can_expand
+        ):
+            parts.append(tr("MainWindow", "Enter: open group"))
+        else:
+            parts.append(tr("MainWindow", "Enter: open inspector"))
         return " · ".join(parts)
 
     def _update_inspector_title(self) -> None:
