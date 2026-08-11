@@ -20,6 +20,7 @@ from h5viewer.domain.models import (
     ObjectKind,
     scalar_to_text,
 )
+from h5viewer.presentation.qt.icons import object_icon
 from h5viewer.presentation.qt.translations import tr
 
 
@@ -156,6 +157,18 @@ class HdfTreeModel(QAbstractItemModel):
             if link.error:
                 lines.append(link.error)
             return "\n".join(lines)
+        if role == int(Qt.ItemDataRole.DecorationRole) and index.column() == 0:
+            if link.object_kind is ObjectKind.BROKEN_LINK:
+                return object_icon("warning")
+            if link.link_kind in {LinkKind.SOFT, LinkKind.EXTERNAL}:
+                return object_icon("link")
+            icon_names = {
+                ObjectKind.FILE: "file",
+                ObjectKind.GROUP: "folder",
+                ObjectKind.DATASET: "dataset",
+                ObjectKind.NAMED_DATATYPE: "datatype",
+            }
+            return object_icon(icon_names.get(link.object_kind, "file"))
         if role == int(Qt.ItemDataRole.ForegroundRole):
             if link.object_kind is ObjectKind.BROKEN_LINK:
                 return QColor("#d1495b")

@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
-    QStyle,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
 )
 
@@ -39,6 +39,7 @@ from h5viewer.presentation.qt.analysis_dialogs import (
     FileComparisonDialog,
     MetadataSearchDialog,
 )
+from h5viewer.presentation.qt.icons import interface_icon
 from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
 from h5viewer.presentation.qt.theme import ThemeManager
@@ -89,6 +90,7 @@ class MainWindow(QMainWindow):
         self._coordinated_moves: list[CoordinatedMove] = []
         self._active_session: DocumentSession | None = None
         self._active_link: LinkRef | None = None
+        self._active_pane: BrowserPane | None = None
         self._plugin_manager: PluginManager | None = None
         self._plugin_actions: dict[tuple[str, str], tuple[QAction, LocalizedText]] = {}
         self._plugin_separator: QAction | None = None
@@ -110,34 +112,35 @@ class MainWindow(QMainWindow):
         self.pane_splitter.setChildrenCollapsible(False)
         self.pane_splitter.setStretchFactor(0, 1)
         self.pane_splitter.setStretchFactor(1, 1)
+        self.pane_splitter.setHandleWidth(10)
+        self.pane_splitter.setContentsMargins(12, 12, 12, 10)
         self.setCentralWidget(self.pane_splitter)
+        self.setMinimumSize(900, 560)
 
         self.inspector_window = QDialog(self, Qt.WindowType.Window)
         self.inspector_window.setObjectName("object_inspector_window")
         self.inspector_window.setModal(False)
         inspector_layout = QVBoxLayout(self.inspector_window)
-        inspector_layout.setContentsMargins(6, 6, 6, 6)
+        inspector_layout.setContentsMargins(12, 12, 12, 12)
         self.inspector = ObjectInspector(self.ensure_editing, self.inspector_window)
         inspector_layout.addWidget(self.inspector)
         self.inspector_window.resize(1050, 720)
+        self.statusBar().setObjectName("mainStatusBar")
+        self.statusBar().setSizeGripEnabled(False)
         self.statusBar().showMessage("")
+        self._set_active_pane(self.left_pane)
 
     def _create_actions(self) -> None:
-        style = self.style()
-        self.new_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon), "", self)
+        self.new_action = QAction("", self)
         self.new_action.setShortcut(QKeySequence.StandardKey.New)
         self.new_action.triggered.connect(self.create_file)
-        self.open_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton), "", self
-        )
+        self.open_action = QAction("", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self.open_files)
         self.close_action = QAction("", self)
         self.close_action.setShortcut(QKeySequence.StandardKey.Close)
         self.close_action.triggered.connect(self.close_active_document)
-        self.save_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton), "", self
-        )
+        self.save_action = QAction("", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.triggered.connect(self.save_active)
         self.save_as_action = QAction("", self)
@@ -151,17 +154,13 @@ class MainWindow(QMainWindow):
 
         self.enable_edit_action = QAction("", self)
         self.enable_edit_action.triggered.connect(self.enable_active_editing)
-        self.undo_action = QAction(style.standardIcon(QStyle.StandardPixmap.SP_ArrowBack), "", self)
+        self.undo_action = QAction("", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self.undo)
-        self.redo_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowForward), "", self
-        )
+        self.redo_action = QAction("", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self.redo)
-        self.refresh_action = QAction(
-            style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "", self
-        )
+        self.refresh_action = QAction("", self)
         self.refresh_action.setShortcut(QKeySequence("Ctrl+R"))
         self.refresh_action.triggered.connect(self.refresh_active)
         self.copy_right_action = QAction("", self)
@@ -210,6 +209,7 @@ class MainWindow(QMainWindow):
 
         self.about_action = QAction("", self)
         self.about_action.triggered.connect(self.show_about)
+        self._update_action_icons()
 
     def _create_menus(self) -> None:
         self.file_menu = self.menuBar().addMenu("")
@@ -241,7 +241,9 @@ class MainWindow(QMainWindow):
     def _create_toolbar(self) -> None:
         self.toolbar = QToolBar(self)
         self.toolbar.setObjectName("main_toolbar")
-        self.toolbar.setMovable(True)
+        self.toolbar.setMovable(False)
+        self.toolbar.setFloatable(False)
+        self.toolbar.setIconSize(QSize(18, 18))
         self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.toolbar.addActions([self.new_action, self.open_action])
         self.toolbar.addSeparator()
@@ -259,6 +261,31 @@ class MainWindow(QMainWindow):
         )
         self.addToolBar(self.toolbar)
 
+        # Часто используемые команды остаются подписанными, служебные занимают одну иконку.
+        compact_actions = (
+            self.undo_action,
+            self.redo_action,
+            self.refresh_action,
+        )
+        transfer_actions = (
+            self.copy_right_action,
+            self.copy_left_action,
+            self.move_right_action,
+            self.move_left_action,
+        )
+        for action in compact_actions:
+            button = self.toolbar.widgetForAction(action)
+            if isinstance(button, QToolButton):
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+                button.setProperty("compact", True)
+        for action in transfer_actions:
+            button = self.toolbar.widgetForAction(action)
+            if isinstance(button, QToolButton):
+                button.setProperty("transfer", True)
+        open_button = self.toolbar.widgetForAction(self.open_action)
+        if isinstance(open_button, QToolButton):
+            open_button.setProperty("primary", True)
+
     def _connect_signals(self) -> None:
         for pane in (self.left_pane, self.right_pane):
             pane.object_selected.connect(self._show_object)
@@ -266,11 +293,47 @@ class MainWindow(QMainWindow):
             pane.document_changed.connect(self._activate_session)
             pane.content_changed.connect(self._content_changed)
             pane.status_message.connect(self.statusBar().showMessage)
+            pane.activated.connect(self._set_active_pane)
         self.inspector.content_changed.connect(self._content_changed)
         self.inspector.dataset_resized.connect(self._dataset_resized)
         self.inspector.reference_activated.connect(self._open_reference_target)
         self.inspector.status_message.connect(self.statusBar().showMessage)
         self._language_manager.language_changed.connect(self._language_changed)
+        self._theme_manager.theme_changed.connect(self._theme_changed)
+
+    def _set_active_pane(self, active: BrowserPane) -> None:
+        """Подсветить панель, в которой пользователь сейчас работает."""
+        self._active_pane = active
+        for pane in (self.left_pane, self.right_pane):
+            pane.setProperty("activePane", pane is active)
+            pane.style().unpolish(pane)
+            pane.style().polish(pane)
+            pane.update()
+
+    def _theme_changed(self, _dark: bool) -> None:
+        """Перерисовать зависящие от палитры векторные значки."""
+        self._update_action_icons()
+        for pane in (self.left_pane, self.right_pane):
+            pane.refresh_visuals()
+
+    def _update_action_icons(self) -> None:
+        """Назначить всем кнопкам единообразные векторные значки."""
+        icons = (
+            (self.new_action, "new", False),
+            (self.open_action, "open", True),
+            (self.enable_edit_action, "edit", False),
+            (self.save_action, "save", False),
+            (self.discard_action, "discard", False),
+            (self.undo_action, "undo", False),
+            (self.redo_action, "redo", False),
+            (self.refresh_action, "refresh", False),
+            (self.copy_right_action, "copy_right", False),
+            (self.copy_left_action, "copy_left", False),
+            (self.move_right_action, "move_right", False),
+            (self.move_left_action, "move_left", False),
+        )
+        for action, name, accent in icons:
+            action.setIcon(interface_icon(name, accent=accent))
 
     def retranslate_ui(self) -> None:
         """Обновить меню, действия и дочерние виджеты после смены языка."""

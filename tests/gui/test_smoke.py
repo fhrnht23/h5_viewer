@@ -108,6 +108,8 @@ def test_enter_opens_separate_inspector_and_panels_use_full_window(
     assert document is not None
     assert window.centralWidget() is window.pane_splitter
     assert not window.inspector_window.isVisible()
+    assert window.left_pane.property("activePane") is True
+    assert window.right_pane.property("activePane") is False
 
     model = window.left_pane._model
     assert model is not None
@@ -129,6 +131,13 @@ def test_enter_opens_separate_inspector_and_panels_use_full_window(
     assert window._active_link.path == "/numeric_alias"
     assert "shape=(3, 4, 5)" in window.statusBar().currentMessage()
     assert "Enter: открыть инспектор" in window.statusBar().currentMessage()
+
+    qtbot.mouseClick(  # type: ignore[attr-defined]
+        window.right_pane.tree.viewport(),
+        Qt.MouseButton.LeftButton,
+    )
+    assert window.left_pane.property("activePane") is False
+    assert window.right_pane.property("activePane") is True
 
 
 def test_inspector_shows_rich_metadata_and_opens_reference(

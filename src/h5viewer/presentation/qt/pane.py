@@ -5,11 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QSortFilterProxyModel, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QStandardItemModel
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLineEdit,
     QMenu,
@@ -31,6 +33,7 @@ from h5viewer.application.document import DocumentSession
 from h5viewer.domain.errors import H5ViewerError
 from h5viewer.domain.models import LinkRef, ObjectKind, split_hdf5_path
 from h5viewer.presentation.qt.dialogs import DatasetCreationDialog, LinkCreationDialog
+from h5viewer.presentation.qt.icons import object_icon
 from h5viewer.presentation.qt.models import HdfTreeModel
 from h5viewer.presentation.qt.translations import tr
 
@@ -56,6 +59,7 @@ class BrowserPane(QWidget):
     status_message = Signal(str)
     document_changed = Signal(object)
     content_changed = Signal(object)
+    activated = Signal(object)
 
     def __init__(
         self,
@@ -72,6 +76,9 @@ class BrowserPane(QWidget):
         self._proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._proxy.setRecursiveFilteringEnabled(True)
         self._proxy.setFilterKeyColumn(-1)
+        self.setObjectName("browserPane")
+        self.setProperty("activePane", False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._create_ui()
         self.retranslate_ui()
 
@@ -81,32 +88,47 @@ class BrowserPane(QWidget):
 
     def _create_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
         self.document_combo = QComboBox(self)
+        self.document_combo.setObjectName("documentCombo")
         self.document_combo.currentIndexChanged.connect(self._select_document_index)
         layout.addWidget(self.document_combo)
 
         path_row = QHBoxLayout()
+        path_row.setSpacing(6)
         self.path_edit = QLineEdit("/", self)
+        self.path_edit.setObjectName("pathEdit")
         self.path_edit.setReadOnly(True)
         self.root_button = QPushButton("/", self)
-        self.root_button.setFixedWidth(34)
+        self.root_button.setObjectName("rootButton")
+        self.root_button.setFixedWidth(36)
         self.root_button.clicked.connect(self._select_root)
         path_row.addWidget(self.root_button)
         path_row.addWidget(self.path_edit, 1)
         layout.addLayout(path_row)
 
         self.filter_edit = QLineEdit(self)
+        self.filter_edit.setObjectName("filterEdit")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._proxy.setFilterFixedString)
         layout.addWidget(self.filter_edit)
 
         self.tree = ObjectTreeView(self)
-        self.tree.setAlternatingRowColors(True)
+        self.tree.setObjectName("objectTree")
+        self.tree.setAlternatingRowColors(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionBehavior(QTreeView.SelectionBehavior.SelectRows)
+        self.tree.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.tree.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.tree.setIndentation(20)
+        self.tree.setAnimated(True)
+        self.tree.setAllColumnsShowFocus(True)
+        header = self.tree.header()
+        header.setMinimumSectionSize(74)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.clicked.connect(self._tree_clicked)
@@ -114,6 +136,23 @@ class BrowserPane(QWidget):
         self.tree.open_requested.connect(self._open_current_link)
         self.tree.setModel(self._proxy)
         layout.addWidget(self.tree, 1)
+
+        # Любой ввод внутри карточки делает её активной панелью файлового менеджера.
+        for widget in (
+            self.document_combo,
+            self.root_button,
+            self.path_edit,
+            self.filter_edit,
+            self.tree,
+            self.tree.viewport(),
+        ):
+            widget.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        """Сообщить главному окну о фокусе или щелчке внутри панели."""
+        if event.type() in {QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress}:
+            self.activated.emit(self)
+        return super().eventFilter(watched, event)
 
     def retranslate_ui(self) -> None:
         """Обновить локализуемые подписи панели."""
@@ -132,7 +171,11 @@ class BrowserPane(QWidget):
         self.document_combo.blockSignals(True)
         self.document_combo.clear()
         for document in documents:
-            self.document_combo.addItem(document.original_path.name, document)
+            self.document_combo.addItem(
+                object_icon("file"),
+                document.original_path.name,
+                document,
+            )
             index = self.document_combo.count() - 1
             self.document_combo.setItemData(
                 index, str(document.original_path), Qt.ItemDataRole.ToolTipRole
@@ -143,6 +186,12 @@ class BrowserPane(QWidget):
         self.document_combo.setCurrentIndex(selected_index)
         self.document_combo.blockSignals(False)
         self._select_document_index(selected_index)
+
+    def refresh_visuals(self) -> None:
+        """Обновить значки после смены светлой или тёмной темы."""
+        for index in range(self.document_combo.count()):
+            self.document_combo.setItemIcon(index, object_icon("file"))
+        self.tree.viewport().update()
 
     def select_document(self, session: DocumentSession) -> None:
         """Показать указанный уже открытый документ."""
@@ -195,9 +244,18 @@ class BrowserPane(QWidget):
             QMessageBox.critical(self, tr("Dialog", "Error"), str(exc))
             return
         self._proxy.setSourceModel(self._model)
+        self._resize_tree_columns()
         self.tree.expandToDepth(0)
         self.document_changed.emit(self._session)
         self._select_root()
+
+    def _resize_tree_columns(self) -> None:
+        """Выделить больше места пути объекта после подключения модели."""
+        header = self.tree.header()
+        header.resizeSection(0, 220)
+        header.resizeSection(1, 95)
+        header.resizeSection(2, 85)
+        header.resizeSection(3, 105)
 
     def _select_root(self) -> None:
         if self._session is None:
