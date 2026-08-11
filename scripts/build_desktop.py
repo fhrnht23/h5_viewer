@@ -11,6 +11,8 @@ from pathlib import Path
 
 import PyInstaller.__main__
 
+from h5viewer import __version__
+
 
 def main() -> None:
     """Запустить PyInstaller с едиными параметрами проекта."""
@@ -64,8 +66,8 @@ def _prepare_macos_bundle(bundle: Path, archive: Path) -> None:
     plist_path = bundle / "Contents" / "Info.plist"
     with plist_path.open("rb") as stream:
         information = plistlib.load(stream)
-    information["CFBundleShortVersionString"] = "0.1.0"
-    information["CFBundleVersion"] = "0.1.0"
+    information["CFBundleShortVersionString"] = __version__
+    information["CFBundleVersion"] = __version__
     with plist_path.open("wb") as stream:
         plistlib.dump(information, stream)
     subprocess.run(("xattr", "-cr", str(bundle)), check=True)

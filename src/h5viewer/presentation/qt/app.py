@@ -10,6 +10,7 @@ from PySide6.QtCore import QCoreApplication, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from h5viewer import __version__
 from h5viewer.plugins.loader import PluginManager
 from h5viewer.presentation.qt.main_window import MainWindow
 from h5viewer.presentation.qt.platform import prepare_qt_platform_plugins
@@ -23,7 +24,7 @@ def create_application(arguments: Sequence[str] | None = None) -> tuple[QApplica
     QCoreApplication.setOrganizationName("H5Viewer")
     QCoreApplication.setOrganizationDomain("h5viewer.local")
     QCoreApplication.setApplicationName("H5 Viewer")
-    QCoreApplication.setApplicationVersion("0.1.0")
+    QCoreApplication.setApplicationVersion(__version__)
     instance = QApplication.instance()
     application = (
         cast(QApplication, instance)

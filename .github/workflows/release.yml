@@ -1,0 +1,178 @@
+name: Публикация релиза
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Проверка версии
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Установить метаданные проекта
+        run: python -m pip install --no-deps -e .
+      - name: Сверить тег и версию пакета
+        id: version
+        run: >-
+          python scripts/release_version.py "${GITHUB_REF_NAME}"
+          --github-output "${GITHUB_OUTPUT}"
+
+  desktop:
+    name: Релиз · ${{ matrix.label }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x86-64
+            platform: windows
+            asset: windows-x86_64
+            arch: x86_64
+          - os: ubuntu-22.04
+            label: Linux x86-64
+            platform: linux
+            asset: linux-x86_64
+            arch: x86_64
+          - os: macos-15
+            label: macOS Apple Silicon
+            platform: macos
+            asset: macos-arm64
+            arch: arm64
+          - os: macos-15-intel
+            label: macOS Intel
+            platform: macos
+            asset: macos-x86_64
+            arch: x86_64
+    env:
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Установить зависимости упаковки
+        run: python -m pip install -e ".[packaging]"
+      - name: Собрать нативное приложение
+        run: python scripts/build_desktop.py
+
+      - name: Собрать Windows Setup
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "Inno Setup compiler not found"
+          }
+          $source = (Resolve-Path "dist/H5Viewer").Path
+          $output = (Resolve-Path "release").Path
+          & $iscc "/DAppVersion=$env:RELEASE_VERSION" "/DSourceDir=$source" "/DOutputDir=$output" "packaging/windows/H5Viewer.iss"
+
+      - name: Собрать Linux AppImage
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir -p build release
+          curl --fail --location --retry 3 \
+            --output build/appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          echo "a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  build/appimagetool-x86_64.AppImage" \
+            | sha256sum --check
+          chmod +x build/appimagetool-x86_64.AppImage
+          python scripts/package_linux_appimage.py \
+            --source dist/H5Viewer \
+            --tool build/appimagetool-x86_64.AppImage \
+            --output "release/H5Viewer-${RELEASE_VERSION}-Linux-x86_64.AppImage"
+
+      - name: Проверить Linux AppImage
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          python -c "import h5py; h5py.File('build/release-smoke.h5', 'w').close()"
+          APPIMAGE_EXTRACT_AND_RUN=1 "release/H5Viewer-${RELEASE_VERSION}-Linux-x86_64.AppImage" \
+            --validate-worker build/release-smoke.h5 build/release-report.json
+          python -c "import json; report=json.load(open('build/release-report.json', encoding='utf-8')); assert report['object_count'] == 1"
+
+      - name: Подготовить архив macOS
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          mkdir -p release
+          mv dist/H5Viewer-macOS.zip \
+            "release/H5Viewer-${RELEASE_VERSION}-macOS-${{ matrix.arch }}.zip"
+
+      - name: Сохранить установщик
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset }}
+          path: release/*
+          if-no-files-found: error
+
+  python-package:
+    name: Релиз · Python wheel и sdist
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Установить сборщик
+        run: python -m pip install build
+      - name: Собрать Python-пакеты
+        run: python -m build
+      - name: Сохранить Python-пакеты
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-python
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Создать GitHub Release
+    needs: [version, desktop, python-package]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Загрузить собранные файлы
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Рассчитать SHA-256 и опубликовать релиз
+        shell: bash
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          gh release create "${GITHUB_REF_NAME}" ./* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "H5 Viewer ${RELEASE_VERSION}" \
+            --generate-notes \
+            --verify-tag

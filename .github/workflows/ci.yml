@@ -2,6 +2,7 @@ name: Проверки и сборка
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
