@@ -131,6 +131,8 @@ class LinkRef:
     shape: tuple[int, ...] | None = None
     dtype: str | None = None
     storage: str | None = None
+    logical_bytes: int | None = None
+    storage_bytes: int | None = None
     child_count: int | None = None
     error: str | None = None
 
@@ -141,6 +143,23 @@ class LinkRef:
             LinkKind.ROOT,
             LinkKind.HARD,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class GroupSizeReport:
+    """Ограниченная метаданными сводка рекурсивного размера группы."""
+
+    path: str
+    logical_bytes: int
+    storage_bytes: int
+    dataset_count: int
+    group_count: int
+    scanned_links: int
+    duplicate_objects: int
+    external_links_skipped: int
+    unresolved_links: int
+    virtual_dataset_count: int
+    cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

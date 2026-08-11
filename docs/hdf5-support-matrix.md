@@ -23,6 +23,7 @@
 | External links | ✅ | ✅ | Создание, файл, target, broken state и undo |
 | Committed datatype | ✅ | — | Metadata |
 | Chunking/layout/fill value | ✅ | ✅ | Настройка при создании dataset |
+| Размеры datasets и groups | ✅ | — | Логический/физический размер; рекурсивный подсчёт групп по запросу без чтения payload |
 | Filter pipeline | ✅ | ◐ | Создание с gzip/lzf, shuffle и Fletcher32 |
 | VDS mappings | ✅ | — | Исходный файл/dataset и обе selection для каждого mapping |
 | Dimension scales | ✅ | — | Labels и пути всех шкал по осям |

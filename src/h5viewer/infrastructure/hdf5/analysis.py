@@ -19,6 +19,7 @@ from h5viewer.domain.models import (
     DifferenceKind,
     FileComparisonReport,
     FileDifference,
+    GroupSizeReport,
     LinkKind,
     MetadataField,
     MetadataMatch,
@@ -26,6 +27,7 @@ from h5viewer.domain.models import (
     MetadataSearchReport,
     ObjectKind,
     join_hdf5_path,
+    normalize_hdf5_path,
 )
 
 ProgressCallback = Callable[[int, str], None]
@@ -70,6 +72,113 @@ class _EntrySnapshot:
     metadata: tuple[tuple[str, str], ...]
     attributes: tuple[tuple[str, _AttributeFingerprint], ...]
     compare_data: bool
+
+
+def calculate_group_size(
+    path: Path | str,
+    group_path: str,
+    *,
+    progress: ProgressCallback | None = None,
+    cancelled: CancelCallback | None = None,
+) -> GroupSizeReport:
+    """Суммировать уникальные datasets группы без чтения их содержимого."""
+    source_path = Path(path).expanduser().resolve()
+    normalized = normalize_hdf5_path(group_path)
+    logical_bytes = 0
+    storage_bytes = 0
+    dataset_count = 0
+    group_count = 0
+    scanned_links = 0
+    duplicate_objects = 0
+    external_links_skipped = 0
+    unresolved_links = 0
+    virtual_dataset_count = 0
+    was_cancelled = False
+    try:
+        with h5py.File(source_path, "r") as h5_file:
+            try:
+                root = h5_file[normalized]
+            except KeyError as exc:
+                raise ValueError(f"Group does not exist: {normalized}") from exc
+            if not isinstance(root, h5py.Group):
+                raise ValueError(f"Object is not a group: {normalized}")
+            pending: list[tuple[str, h5py.Group]] = [(normalized, root)]
+            visited_groups: set[int] = set()
+            visited_datasets: set[int] = set()
+            while pending:
+                if cancelled is not None and cancelled():
+                    was_cancelled = True
+                    break
+                current_path, group = pending.pop()
+                group_address = _object_address(group)
+                if group_address in visited_groups:
+                    duplicate_objects += 1
+                    continue
+                visited_groups.add(group_address)
+                group_count += 1
+                for name in group:
+                    if cancelled is not None and cancelled():
+                        was_cancelled = True
+                        break
+                    scanned_links += 1
+                    entry_path = join_hdf5_path(current_path, name)
+                    if progress is not None and (scanned_links == 1 or scanned_links % 50 == 0):
+                        progress(scanned_links, entry_path)
+                    try:
+                        link = group.get(name, getlink=True)
+                    except (KeyError, OSError, RuntimeError, ValueError):
+                        unresolved_links += 1
+                        continue
+                    if isinstance(link, h5py.ExternalLink):
+                        external_links_skipped += 1
+                        continue
+                    try:
+                        obj = group.get(name)
+                    except (KeyError, OSError, RuntimeError, ValueError):
+                        unresolved_links += 1
+                        continue
+                    if obj is None:
+                        unresolved_links += 1
+                        continue
+                    if isinstance(obj, h5py.Group):
+                        address = _object_address(obj)
+                        if address in visited_groups:
+                            duplicate_objects += 1
+                        else:
+                            pending.append((entry_path, obj))
+                        continue
+                    if not isinstance(obj, h5py.Dataset):
+                        continue
+                    address = _object_address(obj)
+                    if address in visited_datasets:
+                        duplicate_objects += 1
+                        continue
+                    visited_datasets.add(address)
+                    dataset_count += 1
+                    logical_bytes += int(obj.nbytes)
+                    try:
+                        storage_bytes += int(obj.id.get_storage_size())
+                    except (OSError, RuntimeError, ValueError):
+                        unresolved_links += 1
+                    if obj.is_virtual:
+                        virtual_dataset_count += 1
+                if was_cancelled:
+                    break
+    except (OSError, RuntimeError) as exc:
+        raise FileOpenError(f"HDF5 size analysis failed for {source_path}: {exc}") from exc
+    return GroupSizeReport(
+        path=normalized,
+        logical_bytes=logical_bytes,
+        storage_bytes=storage_bytes,
+        dataset_count=dataset_count,
+        group_count=group_count,
+        scanned_links=scanned_links,
+        duplicate_objects=duplicate_objects,
+        external_links_skipped=external_links_skipped,
+        unresolved_links=unresolved_links,
+        virtual_dataset_count=virtual_dataset_count,
+        cancelled=was_cancelled,
+    )
 
 
 def search_hdf5_metadata(

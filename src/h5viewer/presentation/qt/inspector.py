@@ -44,6 +44,7 @@ from h5viewer.domain.models import (
     DatasetExportOptions,
     DatasetSlice,
     ExportFormat,
+    GroupSizeReport,
     LinkRef,
     ObjectDetails,
     ObjectKind,
@@ -51,8 +52,10 @@ from h5viewer.domain.models import (
     ReferenceSourceKind,
     default_dataset_slice,
 )
+from h5viewer.infrastructure.hdf5.analysis import calculate_group_size
 from h5viewer.infrastructure.hdf5.exporting import export_hdf5_dataset
 from h5viewer.presentation.qt.dialogs import ResizeDatasetDialog
+from h5viewer.presentation.qt.formatting import format_byte_size
 from h5viewer.presentation.qt.models import DatasetTableModel
 from h5viewer.presentation.qt.translations import tr
 from h5viewer.presentation.qt.visualization import (
@@ -61,6 +64,60 @@ from h5viewer.presentation.qt.visualization import (
 )
 
 EnsureEditing = Callable[[DocumentSession], bool]
+
+_PROPERTY_LABELS = {
+    "path": "Path",
+    "object_kind": "Object kind",
+    "object_token": "Object token",
+    "attribute_count": "Attribute count",
+    "file": "File",
+    "file_size": "File size",
+    "driver": "Driver",
+    "libver": "HDF5 library bounds",
+    "userblock_size": "User block size",
+    "hdf5_version": "HDF5 version",
+    "h5py_version": "h5py version",
+    "member_count": "Direct members",
+    "shape": "Shape",
+    "rank": "Rank",
+    "dtype": "Dtype",
+    "size": "Elements",
+    "logical_bytes": "Logical size",
+    "storage_bytes": "On disk",
+    "layout": "Layout",
+    "chunks": "Chunks",
+    "maxshape": "Maximum shape",
+    "compression": "Compression",
+    "compression_options": "Compression options",
+    "shuffle": "Shuffle filter",
+    "fletcher32": "Fletcher32 checksum",
+    "scaleoffset": "Scale-offset filter",
+    "fill_value": "Fill value",
+    "is_virtual": "Virtual dataset",
+    "is_dimension_scale": "Dimension scale",
+    "external_storage": "External raw storage",
+    "filter_ids": "Filter identifiers",
+    "filter_names": "Filter names",
+    "virtual_source_count": "Virtual sources",
+    "dimension_labels": "Dimension labels",
+    "recursive_dataset_count": "Unique datasets recursively",
+    "recursive_group_count": "Unique groups recursively",
+    "recursive_logical_bytes": "Recursive logical size",
+    "recursive_storage_bytes": "Recursive size on disk",
+    "scanned_links": "Scanned links",
+    "duplicate_objects": "Aliases and cycles excluded",
+    "external_links_skipped": "External links skipped",
+    "unresolved_links": "Unresolved links",
+    "virtual_dataset_count": "Virtual datasets",
+}
+_BYTE_PROPERTIES = {
+    "file_size",
+    "userblock_size",
+    "logical_bytes",
+    "storage_bytes",
+    "recursive_logical_bytes",
+    "recursive_storage_bytes",
+}
 
 
 class ObjectInspector(QTabWidget):
@@ -81,6 +138,7 @@ class ObjectInspector(QTabWidget):
         self._session: DocumentSession | None = None
         self._link: LinkRef | None = None
         self._details: ObjectDetails | None = None
+        self._group_size_report: GroupSizeReport | None = None
         self._dataset_shape: tuple[int, ...] | None = None
         self._build_ui()
         self.retranslate_ui()
@@ -168,7 +226,18 @@ class ObjectInspector(QTabWidget):
         attribute_buttons.addStretch(1)
         attributes_layout.addLayout(attribute_buttons)
 
-        self.properties_table = QTableWidget(0, 2, self)
+        self.properties_page = QWidget(self)
+        properties_layout = QVBoxLayout(self.properties_page)
+        self.group_size_summary = QLabel(self.properties_page)
+        self.group_size_summary.setWordWrap(True)
+        properties_layout.addWidget(self.group_size_summary)
+        properties_commands = QHBoxLayout()
+        self.calculate_group_size_button = QPushButton(self.properties_page)
+        self.calculate_group_size_button.clicked.connect(self._calculate_group_size)
+        properties_commands.addWidget(self.calculate_group_size_button)
+        properties_commands.addStretch(1)
+        properties_layout.addLayout(properties_commands)
+        self.properties_table = QTableWidget(0, 2, self.properties_page)
         self.properties_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.properties_table.verticalHeader().hide()
         self.properties_table.horizontalHeader().setSectionResizeMode(
@@ -177,6 +246,7 @@ class ObjectInspector(QTabWidget):
         self.properties_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.Stretch
         )
+        properties_layout.addWidget(self.properties_table, 1)
 
         self.links_page = QWidget(self)
         links_layout = QVBoxLayout(self.links_page)
@@ -213,7 +283,7 @@ class ObjectInspector(QTabWidget):
 
         self.addTab(self.data_page, "")
         self.addTab(self.attributes_page, "")
-        self.addTab(self.properties_table, "")
+        self.addTab(self.properties_page, "")
         self.addTab(self.links_page, "")
         self.addTab(self.preview_text, "")
         self.addTab(self.raw_text, "")
@@ -253,6 +323,7 @@ class ObjectInspector(QTabWidget):
         self.add_attribute_button.setText(tr("Inspector", "Add"))
         self.edit_attribute_button.setText(tr("Inspector", "Change"))
         self.delete_attribute_button.setText(tr("Inspector", "Delete"))
+        self.calculate_group_size_button.setText(tr("Inspector", "Calculate recursive size…"))
         self.attributes_table.setHorizontalHeaderLabels(
             [
                 tr("Inspector", "Name"),
@@ -292,6 +363,8 @@ class ObjectInspector(QTabWidget):
         )
         self.open_reference_button.setText(tr("Inspector", "Go to target"))
         if self._link is not None and self._details is not None:
+            self._populate_properties(self._details)
+            self._update_group_size_summary()
             self._populate_link_info(self._link, self._details)
             self._populate_raw(self._details)
 
@@ -300,10 +373,13 @@ class ObjectInspector(QTabWidget):
         self._session = None
         self._link = None
         self._details = None
+        self._group_size_report = None
         self._dataset_shape = None
         self.dataset_model.clear()
         self.attributes_table.setRowCount(0)
         self.properties_table.setRowCount(0)
+        self.calculate_group_size_button.hide()
+        self.group_size_summary.hide()
         self.link_summary.clear()
         self.references_table.setRowCount(0)
         self.dimension_scales_table.setRowCount(0)
@@ -319,7 +395,13 @@ class ObjectInspector(QTabWidget):
         """Показать выбранную ссылку и, если возможно, её целевой объект."""
         self._session = session
         self._link = link
+        self._group_size_report = None
         self._dataset_shape = link.shape
+        is_group = link.object_kind is ObjectKind.GROUP
+        self.calculate_group_size_button.setVisible(is_group)
+        self.calculate_group_size_button.setEnabled(is_group)
+        self.group_size_summary.setVisible(is_group)
+        self._update_group_size_summary()
         if link.object_kind is ObjectKind.BROKEN_LINK:
             self._details = None
             self._show_broken_link(link)
@@ -573,10 +655,126 @@ class ObjectInspector(QTabWidget):
         dialog.exec()
 
     def _populate_properties(self, details: ObjectDetails) -> None:
-        self.properties_table.setRowCount(len(details.properties))
-        for row, (name, value) in enumerate(details.properties):
-            self.properties_table.setItem(row, 0, QTableWidgetItem(name))
-            self.properties_table.setItem(row, 1, QTableWidgetItem(value))
+        properties = list(details.properties)
+        report = self._group_size_report
+        if report is not None and report.path == details.path:
+            properties.extend(
+                [
+                    ("recursive_dataset_count", str(report.dataset_count)),
+                    ("recursive_group_count", str(report.group_count)),
+                    ("recursive_logical_bytes", str(report.logical_bytes)),
+                    ("recursive_storage_bytes", str(report.storage_bytes)),
+                    ("scanned_links", str(report.scanned_links)),
+                    ("duplicate_objects", str(report.duplicate_objects)),
+                    ("external_links_skipped", str(report.external_links_skipped)),
+                    ("unresolved_links", str(report.unresolved_links)),
+                    ("virtual_dataset_count", str(report.virtual_dataset_count)),
+                ]
+            )
+        self.properties_table.setRowCount(len(properties))
+        for row, (name, value) in enumerate(properties):
+            label = tr("Property", _PROPERTY_LABELS.get(name, name))
+            display_value = self._property_value(name, value)
+            self.properties_table.setItem(row, 0, QTableWidgetItem(label))
+            self.properties_table.setItem(row, 1, QTableWidgetItem(display_value))
+        self.properties_table.resizeRowsToContents()
+
+    @staticmethod
+    def _property_value(name: str, value: str) -> str:
+        """Привести размер или счётчик свойства к читаемому виду."""
+        if name in _BYTE_PROPERTIES:
+            try:
+                return format_byte_size(int(value), exact=True)
+            except ValueError:
+                return value
+        if name.endswith("_count") or name in {
+            "size",
+            "rank",
+            "scanned_links",
+            "duplicate_objects",
+            "external_links_skipped",
+            "unresolved_links",
+        }:
+            try:
+                return f"{int(value):,}".replace(",", " ")
+            except ValueError:
+                return value
+        return value
+
+    def _calculate_group_size(self) -> None:
+        """Выполнить отменяемый обход метаданных выбранной группы."""
+        if (
+            self._session is None
+            or self._link is None
+            or self._link.object_kind is not ObjectKind.GROUP
+        ):
+            return
+        progress = QProgressDialog(
+            tr("Inspector", "Calculating recursive group size…"),
+            tr("Inspector", "Cancel"),
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(tr("Inspector", "Group size"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+
+        def update(count: int, path: str) -> None:
+            progress.setLabelText(
+                f"{tr('Inspector', 'Calculating recursive group size…')}\n{count}: {path}"
+            )
+            QApplication.processEvents()
+
+        try:
+            report = calculate_group_size(
+                self._session.active_path,
+                self._link.path,
+                progress=update,
+                cancelled=progress.wasCanceled,
+            )
+        except (H5ViewerError, ValueError) as exc:
+            progress.close()
+            self._show_error(str(exc))
+            return
+        progress.close()
+        if report.cancelled:
+            self.group_size_summary.setText(tr("Inspector", "Size calculation cancelled"))
+            self.status_message.emit(tr("Inspector", "Size calculation cancelled"))
+            return
+        self._group_size_report = report
+        if self._details is not None:
+            self._populate_properties(self._details)
+        self._update_group_size_summary()
+        self.setCurrentWidget(self.properties_page)
+        self.status_message.emit(tr("Inspector", "Group size calculated"))
+
+    def _update_group_size_summary(self) -> None:
+        """Показать результат или пояснение границ рекурсивного подсчёта."""
+        if self._link is None or self._link.object_kind is not ObjectKind.GROUP:
+            self.group_size_summary.clear()
+            return
+        report = self._group_size_report
+        if report is None:
+            self.group_size_summary.setText(
+                tr(
+                    "Inspector",
+                    "The calculation counts unique dataset payloads; HDF5 metadata, attributes "
+                    "and external links are not included.",
+                )
+            )
+            return
+        self.group_size_summary.setText(
+            tr(
+                "Inspector",
+                "Datasets: {datasets} · Logical: {logical} · On disk: {storage}",
+            ).format(
+                datasets=report.dataset_count,
+                logical=format_byte_size(report.logical_bytes),
+                storage=format_byte_size(report.storage_bytes),
+            )
+        )
 
     def _populate_attributes(self, attributes: tuple[AttributeInfo, ...]) -> None:
         self.attributes_table.setRowCount(len(attributes))
@@ -898,7 +1096,10 @@ class ObjectInspector(QTabWidget):
         except H5ViewerError as exc:
             self._show_error(str(exc))
             return
-        self._link = replace(self._link, shape=new_shape)
+        try:
+            self._link = self._session.repository().link(self._link.path)
+        except H5ViewerError:
+            self._link = replace(self._link, shape=new_shape)
         self.show_object(self._session, self._link)
         self.dataset_resized.emit(
             self._session,

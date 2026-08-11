@@ -172,6 +172,8 @@ class H5pyRepository:
         shape: tuple[int, ...] | None = None
         dtype: str | None = None
         storage: str | None = None
+        logical_bytes: int | None = None
+        storage_bytes: int | None = None
         child_count: int | None = None
         if isinstance(obj, h5py.Group):
             child_count = len(obj)
@@ -179,6 +181,11 @@ class H5pyRepository:
             shape = None if obj.shape is None else tuple(int(size) for size in obj.shape)
             dtype = str(obj.dtype)
             storage = _dataset_layout(obj)
+            logical_bytes = int(obj.nbytes)
+            try:
+                storage_bytes = int(obj.id.get_storage_size())
+            except (OSError, RuntimeError, ValueError):
+                storage_bytes = None
         elif isinstance(obj, h5py.Datatype):
             dtype = str(obj.dtype)
 
@@ -194,6 +201,8 @@ class H5pyRepository:
             shape=shape,
             dtype=dtype,
             storage=storage,
+            logical_bytes=logical_bytes,
+            storage_bytes=storage_bytes,
             child_count=child_count,
         )
 

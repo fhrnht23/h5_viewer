@@ -14,7 +14,38 @@ from h5viewer.domain.models import (
     MetadataField,
     MetadataSearchOptions,
 )
-from h5viewer.infrastructure.hdf5.analysis import compare_hdf5_files, search_hdf5_metadata
+from h5viewer.infrastructure.hdf5.analysis import (
+    calculate_group_size,
+    compare_hdf5_files,
+    search_hdf5_metadata,
+)
+
+
+def test_group_size_counts_unique_datasets_and_skips_external_links(
+    sample_hdf5: Path,
+) -> None:
+    data_report = calculate_group_size(sample_hdf5, "/data")
+    root_report = calculate_group_size(sample_hdf5, "/")
+
+    assert data_report.dataset_count > 10
+    assert data_report.group_count == 1
+    assert data_report.logical_bytes > 1_000_000_000_000
+    assert 0 < data_report.storage_bytes < data_report.logical_bytes
+    assert data_report.virtual_dataset_count == 1
+    assert root_report.logical_bytes == data_report.logical_bytes
+    assert root_report.storage_bytes == data_report.storage_bytes
+    assert root_report.dataset_count == data_report.dataset_count
+    assert root_report.external_links_skipped == 1
+    assert root_report.unresolved_links >= 1
+    assert root_report.duplicate_objects >= 3
+
+
+def test_group_size_can_be_cancelled_before_traversal(sample_hdf5: Path) -> None:
+    report = calculate_group_size(sample_hdf5, "/data", cancelled=lambda: True)
+
+    assert report.cancelled
+    assert report.dataset_count == 0
+    assert report.scanned_links == 0
 
 
 def test_search_finds_paths_dataset_metadata_and_attributes(sample_hdf5: Path) -> None:

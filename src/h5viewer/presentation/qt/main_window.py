@@ -39,6 +39,7 @@ from h5viewer.presentation.qt.analysis_dialogs import (
     FileComparisonDialog,
     MetadataSearchDialog,
 )
+from h5viewer.presentation.qt.formatting import format_byte_size
 from h5viewer.presentation.qt.icons import interface_icon
 from h5viewer.presentation.qt.inspector import ObjectInspector
 from h5viewer.presentation.qt.pane import BrowserPane
@@ -1112,6 +1113,12 @@ class MainWindow(QMainWindow):
             parts.append(f"shape={link.shape}")
         if link.dtype:
             parts.append(f"dtype={link.dtype}")
+        if link.logical_bytes is not None:
+            parts.append(
+                f"{tr('MainWindow', 'Logical size')}: {format_byte_size(link.logical_bytes)}"
+            )
+        if link.storage_bytes is not None:
+            parts.append(f"{tr('MainWindow', 'On disk')}: {format_byte_size(link.storage_bytes)}")
         if link.storage:
             parts.append(link.storage)
         if link.link_kind.value not in {"root", "hard"}:
@@ -1193,8 +1200,19 @@ class MainWindow(QMainWindow):
         shape: tuple[int, ...],
     ) -> None:
         """Синхронизировать форму dataset в обеих панелях без сброса выбора."""
+        try:
+            updated = session.repository().link(path)
+        except H5ViewerError:
+            updated = None
         for pane in (self.left_pane, self.right_pane):
-            pane.update_dataset_shape(session, path, object_token, shape)
+            pane.update_dataset_shape(
+                session,
+                path,
+                object_token,
+                shape,
+                updated.logical_bytes if updated is not None else None,
+                updated.storage_bytes if updated is not None else None,
+            )
         if (
             self._active_session is session
             and self._active_link is not None
@@ -1203,7 +1221,21 @@ class MainWindow(QMainWindow):
                 or bool(object_token and self._active_link.object_token == object_token)
             )
         ):
-            self._active_link = replace(self._active_link, shape=shape)
+            self._active_link = replace(
+                self._active_link,
+                shape=shape,
+                logical_bytes=(
+                    updated.logical_bytes
+                    if updated is not None
+                    else self._active_link.logical_bytes
+                ),
+                storage_bytes=(
+                    updated.storage_bytes
+                    if updated is not None
+                    else self._active_link.storage_bytes
+                ),
+            )
+            self.statusBar().showMessage(self._object_status_text(self._active_link))
 
     def _refresh_session(self, session: DocumentSession) -> None:
         for pane in (self.left_pane, self.right_pane):

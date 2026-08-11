@@ -36,6 +36,9 @@ def test_lists_links_without_following_cycles_forever(sample_hdf5: Path) -> None
     assert by_name["broken_soft"].object_kind is ObjectKind.BROKEN_LINK
     data_links = {link.name: link for link in repository.list_children("/data", 0, 20)}
     assert by_name["numeric_alias"].object_token == data_links["numeric"].object_token
+    assert data_links["numeric"].logical_bytes == 60 * 8
+    assert data_links["numeric"].storage_bytes is not None
+    assert data_links["numeric"].storage_bytes < data_links["numeric"].logical_bytes
 
     loop = repository.list_children("/loops", 0, 10)[0]
     assert loop.object_kind is ObjectKind.GROUP
@@ -50,6 +53,8 @@ def test_details_include_storage_and_attributes(sample_hdf5: Path) -> None:
     assert properties["shape"] == "(3, 4, 5)"
     assert properties["layout"] == "chunked"
     assert properties["compression"] == "gzip"
+    assert properties["logical_bytes"] == str(60 * 8)
+    assert 0 < int(properties["storage_bytes"]) < 60 * 8
     assert attributes["unit"].value_text == "м/с"
 
 

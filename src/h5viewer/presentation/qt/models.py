@@ -22,6 +22,7 @@ from h5viewer.domain.models import (
     scalar_to_text,
     split_hdf5_path,
 )
+from h5viewer.presentation.qt.formatting import format_byte_size
 from h5viewer.presentation.qt.icons import interface_icon, object_icon
 from h5viewer.presentation.qt.translations import tr
 
@@ -80,6 +81,8 @@ class HdfTreeModel(QAbstractItemModel):
         path: str,
         object_token: str | None,
         shape: tuple[int, ...],
+        logical_bytes: int | None = None,
+        storage_bytes: int | None = None,
     ) -> None:
         """Обновить форму dataset во всех уже загруженных ссылках на объект."""
         root_index = self.index(0, 0)
@@ -88,11 +91,21 @@ class HdfTreeModel(QAbstractItemModel):
             node, index = pending.pop()
             same_object = bool(object_token and node.link.object_token == object_token)
             if node.link.path == path or same_object:
-                node.link = replace(node.link, shape=shape)
+                node.link = replace(
+                    node.link,
+                    shape=shape,
+                    logical_bytes=(
+                        node.link.logical_bytes if logical_bytes is None else logical_bytes
+                    ),
+                    storage_bytes=(
+                        node.link.storage_bytes if storage_bytes is None else storage_bytes
+                    ),
+                )
                 shape_index = index.siblingAtColumn(2)
+                storage_index = index.siblingAtColumn(5)
                 self.dataChanged.emit(
                     shape_index,
-                    shape_index,
+                    storage_index,
                     [int(Qt.ItemDataRole.DisplayRole)],
                 )
             for row, child in enumerate(node.children):
@@ -101,7 +114,7 @@ class HdfTreeModel(QAbstractItemModel):
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
         del parent
-        return 5
+        return 7
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
         if not parent.isValid():
@@ -145,6 +158,8 @@ class HdfTreeModel(QAbstractItemModel):
                 self._display_type(link),
                 self._display_shape(link),
                 link.dtype or "",
+                format_byte_size(link.logical_bytes),
+                format_byte_size(link.storage_bytes),
                 link.storage or "",
             )
             return values[index.column()]
@@ -198,7 +213,9 @@ class HdfTreeModel(QAbstractItemModel):
                 tr("Tree", "Type"),
                 tr("Tree", "Shape"),
                 tr("Tree", "Dtype"),
-                tr("Tree", "Storage"),
+                tr("Tree", "Logical size"),
+                tr("Tree", "On disk"),
+                tr("Tree", "Layout"),
             )[section]
         return None
 
@@ -345,19 +362,31 @@ class HdfFolderModel(QAbstractTableModel):
         path: str,
         object_token: str | None,
         shape: tuple[int, ...],
+        logical_bytes: int | None = None,
+        storage_bytes: int | None = None,
     ) -> None:
         """Обновить форму dataset в загруженных строках текущей группы."""
         for link_row, link in enumerate(self._links):
             same_object = bool(object_token and link.object_token == object_token)
             if link.path != path and not same_object:
                 continue
-            self._links[link_row] = replace(link, shape=shape)
-            index = self.index(link_row + self._link_row_offset, 2)
-            self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.DisplayRole)])
+            self._links[link_row] = replace(
+                link,
+                shape=shape,
+                logical_bytes=link.logical_bytes if logical_bytes is None else logical_bytes,
+                storage_bytes=link.storage_bytes if storage_bytes is None else storage_bytes,
+            )
+            shape_index = self.index(link_row + self._link_row_offset, 2)
+            storage_index = self.index(link_row + self._link_row_offset, 5)
+            self.dataChanged.emit(
+                shape_index,
+                storage_index,
+                [int(Qt.ItemDataRole.DisplayRole)],
+            )
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
         del parent
-        return 5
+        return 7
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
         return 0 if parent.isValid() else len(self._links) + self._link_row_offset
@@ -388,6 +417,8 @@ class HdfFolderModel(QAbstractTableModel):
                 HdfTreeModel._display_type(link),
                 HdfTreeModel._display_shape(link),
                 link.dtype or "",
+                format_byte_size(link.logical_bytes),
+                format_byte_size(link.storage_bytes),
                 link.storage or "",
             )
             return values[index.column()]
@@ -442,7 +473,9 @@ class HdfFolderModel(QAbstractTableModel):
                 tr("Tree", "Type"),
                 tr("Tree", "Shape"),
                 tr("Tree", "Dtype"),
-                tr("Tree", "Storage"),
+                tr("Tree", "Logical size"),
+                tr("Tree", "On disk"),
+                tr("Tree", "Layout"),
             )[section]
         return None
 

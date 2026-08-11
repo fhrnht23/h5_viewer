@@ -246,9 +246,9 @@ class BrowserPane(QWidget):
         self.folder_mode_button.setToolTip(tr("Pane", "Folder view"))
         self.folder_mode_button.setAccessibleName(tr("Pane", "Folder view"))
         if self._model is not None:
-            self._model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 4)
+            self._model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 6)
         if self._folder_model is not None:
-            self._folder_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 4)
+            self._folder_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 6)
 
     def set_documents(
         self,
@@ -344,12 +344,26 @@ class BrowserPane(QWidget):
         path: str,
         object_token: str | None,
         shape: tuple[int, ...],
+        logical_bytes: int | None = None,
+        storage_bytes: int | None = None,
     ) -> None:
         """Обновить форму dataset без сброса раскрытия дерева и выбора."""
         if self._session is session and self._model is not None:
-            self._model.update_dataset_shape(path, object_token, shape)
+            self._model.update_dataset_shape(
+                path,
+                object_token,
+                shape,
+                logical_bytes,
+                storage_bytes,
+            )
             if self._folder_model is not None:
-                self._folder_model.update_dataset_shape(path, object_token, shape)
+                self._folder_model.update_dataset_shape(
+                    path,
+                    object_token,
+                    shape,
+                    logical_bytes,
+                    storage_bytes,
+                )
 
     def _select_document_index(self, index: int) -> None:
         if index < 0 or index >= len(self._documents):
@@ -379,6 +393,8 @@ class BrowserPane(QWidget):
         header.resizeSection(1, 95)
         header.resizeSection(2, 85)
         header.resizeSection(3, 105)
+        header.resizeSection(4, 100)
+        header.resizeSection(5, 100)
 
     def set_navigation_mode(self, mode: str) -> None:
         """Переключить панель между деревом и содержимым одной группы."""

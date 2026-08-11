@@ -138,6 +138,9 @@ def test_same_document_is_shared_by_both_panes(
     assert window.right_pane.session is document
     model = window.left_pane._model
     assert model is not None
+    assert model.columnCount() == 7
+    assert model.headerData(4, Qt.Orientation.Horizontal) == "Логический размер"
+    assert model.headerData(5, Qt.Orientation.Horizontal) == "На диске"
     assert model.rowCount() == 1
     root_index = model.index(0, 0)
     assert model.data(root_index) == "/"
@@ -158,6 +161,8 @@ def test_same_document_is_shared_by_both_panes(
     }
     alias_index = root_children["numeric_alias"]
     numeric_index = data_children["numeric"]
+    assert model.data(numeric_index.siblingAtColumn(4)) == "480 Б"
+    assert model.data(numeric_index.siblingAtColumn(5)).endswith(" Б")
     alias_link = model.data(alias_index, model.LinkRole)
     model.update_dataset_shape("/data/numeric", alias_link.object_token, (9, 8, 7))
     assert model.data(alias_index.siblingAtColumn(2)) == "(9, 8, 7)"
@@ -349,6 +354,12 @@ def test_inspector_shows_rich_metadata_and_opens_reference(
     assert window._active_link.path == "/data/scalar"
 
     window._show_object(document, repository.link("/data/numeric"))
+    table = window.inspector.properties_table
+    properties = {
+        table.item(row, 0).text(): table.item(row, 1).text() for row in range(table.rowCount())
+    }
+    assert properties["Логический размер"] == "480 Б"
+    assert properties["На диске"].endswith(" Б")
     assert window.inspector.dimension_scales_table.rowCount() == 3
     assert window.inspector.dimension_scales_table.item(2, 2).text() == "/data/x"
     assert window.inspector.export_dataset_button.isEnabled()
@@ -358,6 +369,16 @@ def test_inspector_shows_rich_metadata_and_opens_reference(
 
     window._show_object(document, repository.link("/data/virtual_numeric"))
     assert window.inspector.virtual_mappings_table.rowCount() == 2
+
+    window._show_object(document, repository.link("/data"))
+    assert not window.inspector.calculate_group_size_button.isHidden()
+    window.inspector._calculate_group_size()
+    recursive_properties = {
+        table.item(row, 0).text(): table.item(row, 1).text() for row in range(table.rowCount())
+    }
+    assert "Рекурсивный логический размер" in recursive_properties
+    assert "Рекурсивный размер на диске" in recursive_properties
+    assert "логический размер" in window.inspector.group_size_summary.text()
 
 
 def test_analysis_dialogs_run_and_use_russian_interface(
