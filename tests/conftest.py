@@ -78,6 +78,7 @@ def sample_hdf5(tmp_path: Path) -> Path:
         h5_file["external"] = h5py.ExternalLink(external_path.name, "/external_data")
         loops = h5_file.create_group("loops")
         loops["self"] = loops
+        h5_file.create_group("empty_group")
         h5_file.create_group("данные")
 
         ref_target = data["scalar"]

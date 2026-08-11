@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QEvent, QModelIndex, QObject, QSortFilterProxyModel, Qt, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    QSortFilterProxyModel,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -66,6 +74,22 @@ class ObjectTreeView(QTreeView):
         super().keyPressEvent(event)
 
 
+class ObjectFilterProxyModel(QSortFilterProxyModel):
+    """Не скрывать служебный переход к родителю при фильтрации папки."""
+
+    def filterAcceptsRow(  # noqa: N802
+        self,
+        source_row: int,
+        source_parent: QModelIndex | QPersistentModelIndex,
+    ) -> bool:
+        source = self.sourceModel()
+        if source is not None:
+            index = source.index(source_row, 0, source_parent)
+            if bool(source.data(index, HdfFolderModel.ParentRole)):
+                return True
+        return super().filterAcceptsRow(source_row, source_parent)
+
+
 class BrowserPane(QWidget):
     """Независимая панель выбора документа и навигации по его графу."""
 
@@ -88,7 +112,7 @@ class BrowserPane(QWidget):
         self._model: HdfTreeModel | None = None
         self._folder_model: HdfFolderModel | None = None
         self._navigation_mode = "tree"
-        self._proxy = QSortFilterProxyModel(self)
+        self._proxy = ObjectFilterProxyModel(self)
         self._empty_model = QStandardItemModel(self)
         self._proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._proxy.setRecursiveFilteringEnabled(True)
@@ -276,12 +300,8 @@ class BrowserPane(QWidget):
         try:
             self._model.refresh()
             if self._navigation_mode == "folders":
-                group_path = self._refresh_folder_with_fallback()
-                self.path_edit.setText(group_path)
-                self.up_button.setEnabled(group_path != "/")
-                assert self._session is not None
-                group = self._session.repository().link(group_path)
-                self.object_selected.emit(self._session, group)
+                self._refresh_folder_with_fallback()
+                self._select_folder_group()
             else:
                 self.tree.expandToDepth(0)
                 self._select_root()
@@ -438,6 +458,10 @@ class BrowserPane(QWidget):
         self.path_edit.setText(path)
         self.up_button.setEnabled(path != "/")
         self.tree.setCurrentIndex(QModelIndex())
+        if path != "/" and self._proxy.rowCount() > 0:
+            parent_index = self._proxy.index(0, 0)
+            self.tree.setCurrentIndex(parent_index)
+            self.tree.scrollTo(parent_index)
         try:
             link = self._session.repository().link(path)
         except H5ViewerError as exc:
@@ -495,6 +519,16 @@ class BrowserPane(QWidget):
         if self._model is None or self._session is None:
             return
         source = self._proxy.mapToSource(proxy_index.siblingAtColumn(0))
+        if bool(self._proxy.sourceModel().data(source, HdfFolderModel.ParentRole)):
+            try:
+                parent_path = self._proxy.sourceModel().data(source, HdfFolderModel.PathRole)
+                parent = self._session.repository().link(str(parent_path))
+            except H5ViewerError as exc:
+                self.status_message.emit(str(exc))
+                return
+            self.object_selected.emit(self._session, parent)
+            self.status_message.emit(tr("Pane", "Enter: go to parent group"))
+            return
         link = self._proxy.sourceModel().data(source, HdfTreeModel.LinkRole)
         if isinstance(link, LinkRef):
             if self._navigation_mode == "tree":
@@ -503,6 +537,9 @@ class BrowserPane(QWidget):
 
     def _tree_double_clicked(self, proxy_index: Any) -> None:
         if not proxy_index.isValid():
+            return
+        if self._is_parent_entry(proxy_index):
+            self._go_up()
             return
         link = self.current_link()
         if self._navigation_mode == "folders" and link is not None and link.can_expand:
@@ -518,11 +555,21 @@ class BrowserPane(QWidget):
 
     def _activate_current_link(self) -> None:
         """Войти в группу режима папок либо открыть инспектор выбранного объекта."""
+        if self._is_parent_entry(self.tree.currentIndex()):
+            self._go_up()
+            return
         link = self.current_link()
         if self._navigation_mode == "folders" and link is not None and link.can_expand:
             self._navigate_to_group(link.path)
             return
         self._open_current_link()
+
+    def _is_parent_entry(self, proxy_index: QModelIndex) -> bool:
+        """Проверить, представляет ли строка служебный переход «..»."""
+        if not proxy_index.isValid() or self._proxy.sourceModel() is None:
+            return False
+        source = self._proxy.mapToSource(proxy_index.siblingAtColumn(0))
+        return bool(self._proxy.sourceModel().data(source, HdfFolderModel.ParentRole))
 
     def _open_current_link(self) -> None:
         """Открыть выбранный объект в отдельном инспекторе."""

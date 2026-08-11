@@ -294,6 +294,27 @@ def test_folder_navigation_shows_only_current_group(
         Qt.KeyboardModifier.ControlModifier,
     )
     assert pane.path_edit.text() == "/"
+
+    empty_group_index = next(
+        pane._proxy.index(row, 0)
+        for row in range(pane._proxy.rowCount())
+        if pane._proxy.data(pane._proxy.index(row, 0)) == "empty_group"
+    )
+    pane.tree.setCurrentIndex(empty_group_index)
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+    assert pane.path_edit.text() == "/empty_group"
+    assert pane._proxy.rowCount() == 1
+    assert pane._proxy.data(pane._proxy.index(0, 0)) == ".."
+    assert pane.tree.currentIndex() == pane._proxy.index(0, 0)
+
+    # Служебная строка не исчезает даже при активном фильтре пустой папки.
+    pane.filter_edit.setText("несуществующий объект")
+    assert pane._proxy.rowCount() == 1
+    pane.tree.setCurrentIndex(pane._proxy.index(0, 0))
+    qtbot.keyClick(pane.tree, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+    assert pane.path_edit.text() == "/"
+    pane.filter_edit.clear()
+
     pane.set_navigation_mode("tree")
     assert pane.tree_mode_button.isChecked()
     assert pane.path_edit.text() == "/"

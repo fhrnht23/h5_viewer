@@ -20,8 +20,9 @@ from h5viewer.domain.models import (
     ObjectKind,
     normalize_hdf5_path,
     scalar_to_text,
+    split_hdf5_path,
 )
-from h5viewer.presentation.qt.icons import object_icon
+from h5viewer.presentation.qt.icons import interface_icon, object_icon
 from h5viewer.presentation.qt.translations import tr
 
 
@@ -291,6 +292,7 @@ class HdfFolderModel(QAbstractTableModel):
 
     PathRole = HdfTreeModel.PathRole
     LinkRole = HdfTreeModel.LinkRole
+    ParentRole = HdfTreeModel.LinkRole + 1
     _PAGE_SIZE = 200
 
     def __init__(
@@ -310,6 +312,17 @@ class HdfFolderModel(QAbstractTableModel):
     def group_path(self) -> str:
         """Вернуть путь отображаемой группы."""
         return self._group_path
+
+    @property
+    def _link_row_offset(self) -> int:
+        """Оставить нулевую строку для перехода к родителю вне корня."""
+        return int(self._group_path != "/")
+
+    @property
+    def parent_path(self) -> str:
+        """Вернуть путь родительской группы для служебной строки."""
+        parent, _name = split_hdf5_path(self._group_path)
+        return parent
 
     def set_group(self, path: str) -> None:
         """Перейти в группу и загрузить первую ограниченную страницу ссылок."""
@@ -334,12 +347,12 @@ class HdfFolderModel(QAbstractTableModel):
         shape: tuple[int, ...],
     ) -> None:
         """Обновить форму dataset в загруженных строках текущей группы."""
-        for row, link in enumerate(self._links):
+        for link_row, link in enumerate(self._links):
             same_object = bool(object_token and link.object_token == object_token)
             if link.path != path and not same_object:
                 continue
-            self._links[row] = replace(link, shape=shape)
-            index = self.index(row, 2)
+            self._links[link_row] = replace(link, shape=shape)
+            index = self.index(link_row + self._link_row_offset, 2)
             self.dataChanged.emit(index, index, [int(Qt.ItemDataRole.DisplayRole)])
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
@@ -347,12 +360,28 @@ class HdfFolderModel(QAbstractTableModel):
         return 5
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-        return 0 if parent.isValid() else len(self._links)
+        return 0 if parent.isValid() else len(self._links) + self._link_row_offset
 
     def data(self, index: QModelIndex, role: int = int(Qt.ItemDataRole.DisplayRole)) -> Any:
-        if not index.isValid() or index.row() >= len(self._links):
+        if not index.isValid() or index.row() >= self.rowCount():
             return None
-        link = self._links[index.row()]
+        if self._link_row_offset and index.row() == 0:
+            if role == int(Qt.ItemDataRole.DisplayRole):
+                return ".." if index.column() == 0 else ""
+            if role == int(Qt.ItemDataRole.ToolTipRole):
+                return tr("Tree", "Parent group")
+            if role == int(Qt.ItemDataRole.DecorationRole) and index.column() == 0:
+                return interface_icon("up")
+            if role == int(Qt.ItemDataRole.FontRole):
+                font = QFont()
+                font.setBold(True)
+                return font
+            if role == self.PathRole:
+                return self.parent_path
+            if role == self.ParentRole:
+                return True
+            return None
+        link = self._links[index.row() - self._link_row_offset]
         if role == int(Qt.ItemDataRole.DisplayRole):
             values = (
                 HdfTreeModel._display_name(TreeNode(link)),
@@ -397,6 +426,8 @@ class HdfFolderModel(QAbstractTableModel):
             return link.path
         if role == self.LinkRole:
             return link
+        if role == self.ParentRole:
+            return False
         return None
 
     def headerData(  # noqa: N802
@@ -436,7 +467,8 @@ class HdfFolderModel(QAbstractTableModel):
         if not links:
             self._total_children = offset
             return
-        self.beginInsertRows(QModelIndex(), offset, offset + len(links) - 1)
+        first_row = offset + self._link_row_offset
+        self.beginInsertRows(QModelIndex(), first_row, first_row + len(links) - 1)
         self._links.extend(links)
         self.endInsertRows()
 

@@ -33,6 +33,7 @@ _RU: dict[str, str] = {
     "Object inspector": "Инспектор объекта",
     "Enter: open inspector": "Enter: открыть инспектор",
     "Enter: open group": "Enter: открыть группу",
+    "Enter: go to parent group": "Enter: перейти на уровень вверх",
     "New file…": "Новый файл…",
     "Close file": "Закрыть файл",
     "Save": "Сохранить",
