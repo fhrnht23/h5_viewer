@@ -8,7 +8,7 @@ from scripts.release_version import release_version
 
 
 def test_release_tag_matches_package_version() -> None:
-    assert release_version("v0.1.0") == "0.1.0"
+    assert release_version("v0.1.1") == "0.1.1"
 
 
 def test_release_tag_mismatch_is_rejected() -> None:
