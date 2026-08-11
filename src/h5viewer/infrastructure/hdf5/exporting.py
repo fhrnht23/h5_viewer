@@ -141,7 +141,7 @@ def _export_npy(
     """Записать полный dataset через memory map, не материализуя его целиком."""
     assert dataset.shape is not None
     shape = tuple(int(size) for size in dataset.shape)
-    memory_map = np.lib.format.open_memmap(  # type: ignore[no-untyped-call]
+    memory_map = np.lib.format.open_memmap(  # type: ignore[no-untyped-call,unused-ignore]
         destination,
         mode="w+",
         dtype=dataset.dtype,

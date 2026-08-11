@@ -140,7 +140,8 @@ class TransactionManager:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows реализует os.fsync() через _commit(), которому нужен дескриптор с правом записи.
+    with path.open("rb+") as handle:
         os.fsync(handle.fileno())
 
 

@@ -25,6 +25,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+      - name: Установить системные библиотеки Qt
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
       - name: Установить проект
         run: python -m pip install -e ".[dev]"
       - name: Проверить стиль
