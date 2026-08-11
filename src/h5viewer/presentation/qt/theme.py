@@ -116,9 +116,7 @@ class ThemeManager(QObject):
         self._application = application
         self._settings = QSettings()
         self._dark = bool(self._settings.value("ui/dark_theme", False, type=bool))
-        requested_style = str(
-            self._settings.value("ui/widget_style", H5ModernStyle.NAME)
-        )
+        requested_style = str(self._settings.value("ui/widget_style", H5ModernStyle.NAME))
         self._style_name = self._resolve_style_name(requested_style)
 
     @property

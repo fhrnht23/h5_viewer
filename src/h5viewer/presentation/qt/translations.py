@@ -60,9 +60,7 @@ _RU: dict[str, str] = {
     "Qt widget style": "Стиль элементов Qt",
     "Progress preview": "Предпросмотр индикатора",
     "Processing HDF5 objects…": "Обработка объектов HDF5…",
-    "Cancel restores the previous appearance.": (
-        "Кнопка «Отмена» вернёт предыдущее оформление."
-    ),
+    "Cancel restores the previous appearance.": ("Кнопка «Отмена» вернёт предыдущее оформление."),
     "Russian": "Русский",
     "English": "Английский",
     "About": "О программе",
