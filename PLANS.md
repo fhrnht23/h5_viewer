@@ -47,7 +47,7 @@ Updated: 2026-08-11
 
 - [x] Versioned entry-point plugin API and sample plugin.
 - [x] Process-isolated validation before commit.
-- [ ] Crash injection and large-file performance tests.
+- [x] Crash injection and large-file performance tests.
 - [ ] Packaging and CI matrix for Windows, macOS, and Linux.
 - [ ] User and developer documentation with a verified support matrix.
 
